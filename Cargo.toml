@@ -1,8 +1,16 @@
 [package]
-name = "ht"
+name = "ht-core"
 version = "0.3.0"
-edition = "2021"
-rust-version = "1.74"
+edition = "2024"
+rust-version = "1.85"
+
+[[bin]]
+name = "ht"
+path = "src/main.rs"
+
+[lib]
+name = "ht_core"
+path = "src/lib.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,6 +28,7 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 futures-util = "0.3.30"
 rust-embed = "8.4.0"
 mime_guess = "2.0.5"
+uuid = { version = "1.0", features = ["v4"] }
 
 [profile.release]
 strip = true

@@ -144,7 +144,7 @@ fn exec(command: String) -> io::Result<()> {
         .map(|s| CString::new(s.as_bytes()))
         .collect::<Result<Vec<CString>, NulError>>()?;
 
-    env::set_var("TERM", "xterm-256color");
+    unsafe { env::set_var("TERM", "xterm-256color") };
     unsafe { signal::signal(Signal::SIGPIPE, SigHandler::SigDfl) }?;
     unistd::execvp(&command[0], &command)?;
     unsafe { libc::_exit(1) }

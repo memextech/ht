@@ -1,10 +1,10 @@
 use anyhow::Result;
-use futures_util::{stream, Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use serde_json::json;
 use std::future;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 pub struct Session {
     vt: avt::Vt,
@@ -72,6 +72,11 @@ impl Session {
 
     pub fn cursor_key_app_mode(&self) -> bool {
         self.vt.arrow_key_app_mode()
+    }
+
+    /// Get the current terminal text content
+    pub fn get_text(&self) -> String {
+        self.text_view()
     }
 
     pub fn subscribe(&self) -> Subscription {
