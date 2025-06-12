@@ -2,7 +2,7 @@ use super::Subscription;
 use crate::command::{self, Command, InputSeq};
 use crate::session;
 use anyhow::Result;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use std::io;
 use std::thread;
 use tokio::sync::mpsc;
@@ -279,7 +279,7 @@ fn parse_key(key: String) -> InputSeq {
 
 #[cfg(test)]
 mod test {
-    use super::{cursor_key, parse_line, standard_key, Command};
+    use super::{Command, cursor_key, parse_line, standard_key};
     use crate::command::InputSeq;
 
     #[test]

@@ -16,7 +16,11 @@ pub fn check_utf8_locale() -> anyhow::Result<()> {
             .or(env::var("LANG").map(|v| format!("LANG={}", v)))
             .unwrap_or("".to_string());
 
-        Err(anyhow::anyhow!("ASCII or UTF-8 character encoding required. The environment ({}) specifies the character set \"{}\". Check the output of `locale` command.", env, encoding))
+        Err(anyhow::anyhow!(
+            "ASCII or UTF-8 character encoding required. The environment ({}) specifies the character set \"{}\". Check the output of `locale` command.",
+            env,
+            encoding
+        ))
     }
 }
 
