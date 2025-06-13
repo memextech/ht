@@ -7,7 +7,7 @@ on:
     branches: [ windows-support ]
 
 jobs:
-  windows-build:
+  windows-build-and-test:
     runs-on: windows-latest
     
     steps:
@@ -19,28 +19,67 @@ jobs:
         targets: x86_64-pc-windows-msvc
     
     - name: Cache cargo registry
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Cache cargo index
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
     
-    - name: Build
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    - name: Check for linting issues
+      run: cargo clippy -- -D warnings
+    
+    - name: Build debug
       run: cargo build --verbose
     
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Run unit tests
+      run: cargo test --verbose --lib
+    
+    - name: Run integration tests
+      run: cargo test --verbose --test integration
     
     - name: Build release
-      run: cargo build --release
+      run: cargo build --release --verbose
+    
+    - name: Test release binary help
+      run: .\target\release\ht.exe --help
+    
+    - name: Test release binary version
+      run: .\target\release\ht.exe --version
+    
+    - name: Run Windows-specific tests
+      shell: powershell
+      run: .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"
+    
+    - name: Verify binary size (should be reasonable)
+      shell: powershell
+      run: |
+        $size = (Get-Item "target\release\ht.exe").Length
+        Write-Host "Binary size: $($size / 1MB) MB"
+        if ($size -gt 50MB) {
+          Write-Error "Binary size too large: $($size / 1MB) MB"
+          exit 1
+        }
+    
+    - name: Test library functionality
+      run: cargo test --verbose --features=default
       
     - name: Upload Windows binary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ht-windows-x86_64
         path: target/release/ht.exe
+        
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: windows-test-results
+        path: target/debug/deps/ht_core-*.exe

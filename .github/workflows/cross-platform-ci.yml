@@ -1,0 +1,132 @@
+name: Cross-Platform CI
+
+on:
+  push:
+    branches: [ windows-support, main ]
+  pull_request:
+    branches: [ windows-support, main ]
+
+jobs:
+  # Unix builds (macOS and Linux)
+  unix-build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    - name: Check for linting issues
+      run: cargo clippy -- -D warnings
+    
+    - name: Build debug
+      run: cargo build --verbose
+    
+    - name: Run tests
+      run: cargo test --verbose
+    
+    - name: Build release
+      run: cargo build --release --verbose
+    
+    - name: Run Unix-specific tests
+      run: ./scripts/test-unix.sh
+    
+    - name: Upload Unix binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: ht-${{ matrix.target }}
+        path: target/release/ht
+
+  # Windows build
+  windows-build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-msvc
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    - name: Check for linting issues
+      run: cargo clippy -- -D warnings
+    
+    - name: Build debug
+      run: cargo build --verbose
+    
+    - name: Run tests
+      run: cargo test --verbose
+    
+    - name: Build release
+      run: cargo build --release --verbose
+    
+    - name: Run Windows-specific tests
+      shell: powershell
+      run: .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"
+    
+    - name: Upload Windows binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: ht-windows-x86_64
+        path: target/release/ht.exe
+
+  # Summary job to check all platforms passed
+  cross-platform-summary:
+    needs: [unix-build, windows-build]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Check if all builds succeeded
+      run: |
+        if [[ "${{ needs.unix-build.result }}" == "success" && "${{ needs.windows-build.result }}" == "success" ]]; then
+          echo "✅ All cross-platform builds passed!"
+        else
+          echo "❌ Some builds failed:"
+          echo "Unix builds: ${{ needs.unix-build.result }}"
+          echo "Windows build: ${{ needs.windows-build.result }}"
+          exit 1
+        fi
