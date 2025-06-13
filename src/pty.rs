@@ -202,7 +202,7 @@ pub fn spawn(
     } else {
         vec!["cmd.exe".to_string(), "/c".to_string(), command]
     };
-    
+
     // Spawn the process using tokio::process
     let mut child = Command::new(&cmd_args[0])
         .args(&cmd_args[1..])
@@ -211,12 +211,23 @@ pub fn spawn(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn child process: {}", e))?;
-    
-    let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to get child stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to get child stdout"))?;
-    let stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("Failed to get child stderr"))?;
-    
-    Ok(drive_child_windows(child, stdin, stdout, stderr, input_rx, output_tx))
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get child stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get child stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get child stderr"))?;
+
+    Ok(drive_child_windows(
+        child, stdin, stdout, stderr, input_rx, output_tx,
+    ))
 }
 
 #[cfg(windows)]
@@ -232,7 +243,7 @@ async fn drive_child_windows(
     let mut stderr_reader = BufReader::new(stderr);
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
-    
+
     loop {
         tokio::select! {
             // Handle input from the application
@@ -254,7 +265,7 @@ async fn drive_child_windows(
                     }
                 }
             }
-            
+
             // Handle stdout output
             result = stdout_reader.read_until(b'\n', &mut stdout_buf) => {
                 match result {
@@ -275,7 +286,7 @@ async fn drive_child_windows(
                     }
                 }
             }
-            
+
             // Handle stderr output
             result = stderr_reader.read_until(b'\n', &mut stderr_buf) => {
                 match result {
@@ -295,7 +306,7 @@ async fn drive_child_windows(
                     }
                 }
             }
-            
+
             // Handle child process exit
             result = child.wait() => {
                 match result {
@@ -311,11 +322,11 @@ async fn drive_child_windows(
             }
         }
     }
-    
+
     // Ensure child process is terminated
     if let Err(e) = child.kill().await {
         eprintln!("Failed to kill child process: {}", e);
     }
-    
+
     Ok(())
 }
