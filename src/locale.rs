@@ -1,35 +1,53 @@
+#[cfg(unix)]
 use nix::libc::{self, CODESET, LC_ALL};
-use std::env;
+#[cfg(unix)]
 use std::ffi::CStr;
+use std::env;
 
 pub fn check_utf8_locale() -> anyhow::Result<()> {
-    initialize_from_env();
+    #[cfg(unix)]
+    {
+        initialize_from_env();
 
-    let encoding = get_encoding();
+        let encoding = get_encoding();
 
-    if ["US-ASCII", "UTF-8"].contains(&encoding.as_str()) {
+        if ["US-ASCII", "UTF-8"].contains(&encoding.as_str()) {
+            Ok(())
+        } else {
+            let env = env::var("LC_ALL")
+                .map(|v| format!("LC_ALL={}", v))
+                .or(env::var("LC_CTYPE").map(|v| format!("LC_CTYPE={}", v)))
+                .or(env::var("LANG").map(|v| format!("LANG={}", v)))
+                .unwrap_or("".to_string());
+
+            Err(anyhow::anyhow!(
+                "ASCII or UTF-8 character encoding required. The environment ({}) specifies the character set \"{}\". Check the output of `locale` command.",
+                env,
+                encoding
+            ))
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, we assume UTF-8 is supported
         Ok(())
-    } else {
-        let env = env::var("LC_ALL")
-            .map(|v| format!("LC_ALL={}", v))
-            .or(env::var("LC_CTYPE").map(|v| format!("LC_CTYPE={}", v)))
-            .or(env::var("LANG").map(|v| format!("LANG={}", v)))
-            .unwrap_or("".to_string());
-
-        Err(anyhow::anyhow!(
-            "ASCII or UTF-8 character encoding required. The environment ({}) specifies the character set \"{}\". Check the output of `locale` command.",
-            env,
-            encoding
-        ))
     }
 }
 
+#[cfg(unix)]
 pub fn initialize_from_env() {
     unsafe {
         libc::setlocale(LC_ALL, b"\0".as_ptr() as *const libc::c_char);
     };
 }
 
+#[cfg(windows)]
+pub fn initialize_from_env() {
+    // No-op on Windows
+}
+
+#[cfg(unix)]
 fn get_encoding() -> String {
     let codeset = unsafe { CStr::from_ptr(libc::nl_langinfo(CODESET)) };
 

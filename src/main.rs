@@ -50,8 +50,17 @@ fn start_pty(
     let command = command.join(" ");
     eprintln!("launching \"{}\" in terminal of size {}", command, size);
 
+    let size_copy = pty::Winsize {
+        ws_col: size.cols() as u16,
+        ws_row: size.rows() as u16,
+        #[cfg(unix)]
+        ws_xpixel: 0,
+        #[cfg(unix)]
+        ws_ypixel: 0,
+    };
+    
     Ok(tokio::spawn(pty::spawn(
-        command, size, input_rx, output_tx,
+        command, size_copy, input_rx, output_tx,
     )?))
 }
 

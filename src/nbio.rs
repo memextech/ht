@@ -1,6 +1,10 @@
 use std::io::{self, ErrorKind, Read};
-use std::{io::Write, os::fd::RawFd};
+use std::io::Write;
 
+#[cfg(unix)]
+use std::os::fd::RawFd;
+
+#[cfg(unix)]
 pub fn set_non_blocking(fd: &RawFd) -> Result<(), io::Error> {
     use nix::fcntl::{fcntl, FcntlArg::*, OFlag};
 
@@ -9,6 +13,13 @@ pub fn set_non_blocking(fd: &RawFd) -> Result<(), io::Error> {
     oflags |= OFlag::O_NONBLOCK;
     fcntl(*fd, F_SETFL(oflags))?;
 
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn set_non_blocking(_handle: &windows::Win32::Foundation::HANDLE) -> Result<(), io::Error> {
+    // On Windows, we handle non-blocking I/O differently
+    // This is a placeholder as winpty handles this for us
     Ok(())
 }
 

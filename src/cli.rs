@@ -1,7 +1,7 @@
 use crate::api::Subscription;
+use crate::pty::Winsize;
 use anyhow::bail;
 use clap::Parser;
-use nix::pty;
 use std::{fmt::Display, net::SocketAddr, ops::Deref, str::FromStr};
 
 #[derive(Debug, Parser)]
@@ -32,7 +32,7 @@ impl Cli {
 }
 
 #[derive(Debug, Clone)]
-pub struct Size(pty::Winsize);
+pub struct Size(Winsize);
 
 impl Default for Cli {
     fn default() -> Self {
@@ -58,10 +58,12 @@ impl FromStr for Size {
                 let cols: u16 = cols.parse()?;
                 let rows: u16 = rows.parse()?;
 
-                let winsize = pty::Winsize {
+                let winsize = Winsize {
                     ws_col: cols,
                     ws_row: rows,
+                    #[cfg(unix)]
                     ws_xpixel: 0,
+                    #[cfg(unix)]
                     ws_ypixel: 0,
                 };
 
@@ -76,7 +78,7 @@ impl FromStr for Size {
 }
 
 impl Deref for Size {
-    type Target = pty::Winsize;
+    type Target = Winsize;
 
     fn deref(&self) -> &Self::Target {
         &self.0
