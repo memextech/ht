@@ -4,7 +4,6 @@
 
 use std::process::{Command, Stdio};
 
-
 /// Test that the HT binary can be built and runs without crashing
 #[test]
 fn test_ht_help() {
