@@ -1,8 +1,17 @@
 [package]
 name = "ht-core"
 version = "0.3.0"
-edition = "2024"
-rust-version = "1.85"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT"
+description = "Core headless terminal library - embedded terminal automation and scripting"
+repository = "https://github.com/memextech/ht"
+homepage = "https://github.com/memextech/ht"
+documentation = "https://docs.rs/ht-core"
+keywords = ["terminal", "headless", "automation", "tty", "pty"]
+categories = ["command-line-utilities", "development-tools", "api-bindings"]
+authors = ["Memex Tech <opensource@memex.tech>"]
+readme = "../README.md"
 
 [[bin]]
 name = "ht"
