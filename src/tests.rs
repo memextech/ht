@@ -50,7 +50,6 @@ mod platform_tests {
 #[cfg(test)]
 #[cfg(windows)]
 mod windows_tests {
-    use super::*;
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -88,7 +87,6 @@ mod windows_tests {
 #[cfg(test)]
 #[cfg(unix)]
 mod unix_tests {
-    use super::*;
 
     /// Test Unix-specific PTY functionality
     #[test]

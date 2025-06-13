@@ -75,6 +75,7 @@ impl Session {
     }
 
     /// Get the current terminal text content
+    #[allow(dead_code)]
     pub fn get_text(&self) -> String {
         self.text_view()
     }
