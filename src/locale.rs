@@ -1,5 +1,6 @@
 #[cfg(unix)]
 use nix::libc::{self, CODESET, LC_ALL};
+#[cfg(unix)]
 use std::env;
 #[cfg(unix)]
 use std::ffi::CStr;
