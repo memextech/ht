@@ -42,6 +42,7 @@ use tokio::process::Command;
 pub use nix::pty::Winsize;
 
 #[cfg(windows)]
+#[derive(Debug, Clone, Copy)]
 pub struct Winsize {
     pub ws_row: u16,
     pub ws_col: u16,

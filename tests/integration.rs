@@ -3,7 +3,7 @@
 //! These tests validate that the HT binary works correctly on all platforms
 
 use std::process::{Command, Stdio};
-use std::time::Duration;
+
 
 /// Test that the HT binary can be built and runs without crashing
 #[test]
