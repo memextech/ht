@@ -193,7 +193,7 @@ fn exec(command: String) -> io::Result<()> {
 #[cfg(windows)]
 pub fn spawn(
     command: String,
-    winsize: Winsize,
+    _winsize: Winsize,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<impl Future<Output = Result<()>>> {
