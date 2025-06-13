@@ -30,6 +30,7 @@ pub fn check_utf8_locale() -> anyhow::Result<()> {
     }
 
     #[cfg(windows)]
+#[allow(dead_code)]
     {
         // On Windows, we assume UTF-8 is supported
         Ok(())
@@ -44,6 +45,7 @@ pub fn initialize_from_env() {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn initialize_from_env() {
     // No-op on Windows
 }
