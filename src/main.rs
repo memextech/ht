@@ -58,7 +58,7 @@ fn start_pty(
         #[cfg(unix)]
         ws_ypixel: 0,
     };
-    
+
     Ok(tokio::spawn(pty::spawn(
         command, size_copy, input_rx, output_tx,
     )?))

@@ -1,5 +1,5 @@
-use std::io::{self, ErrorKind, Read};
 use std::io::Write;
+use std::io::{self, ErrorKind, Read};
 
 #[cfg(unix)]
 use std::os::fd::RawFd;

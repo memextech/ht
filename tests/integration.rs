@@ -1,5 +1,5 @@
 //! Integration tests for HT
-//! 
+//!
 //! These tests validate that the HT binary works correctly on all platforms
 
 use std::process::{Command, Stdio};
@@ -14,7 +14,7 @@ fn test_ht_help() {
         .expect("Failed to execute cargo run");
 
     assert!(output.status.success(), "HT help command failed");
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage:"));
     assert!(stdout.contains("ht"));
@@ -30,7 +30,7 @@ fn test_ht_version() {
         .expect("Failed to execute cargo run");
 
     assert!(output.status.success(), "HT version command failed");
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("0.3.0") || stdout.len() > 0);
 }
@@ -55,7 +55,7 @@ mod windows_integration {
     use super::*;
 
     /// Test that HT can execute a basic Windows command
-    #[test] 
+    #[test]
     fn test_windows_basic_command() {
         let output = Command::new("cargo")
             .args(&["run", "--", "echo hello"])
@@ -63,12 +63,12 @@ mod windows_integration {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
-            
+
         // We just test that we can spawn the process
         // The actual command execution is tested via the Windows CI
         assert!(output.is_ok(), "Failed to spawn HT with Windows command");
     }
-    
+
     /// Test that HT works with Windows cmd.exe
     #[test]
     fn test_windows_cmd() {
@@ -78,7 +78,7 @@ mod windows_integration {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
-            
+
         assert!(output.is_ok(), "Failed to spawn HT with cmd.exe");
     }
 }
@@ -96,7 +96,7 @@ mod unix_integration {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
-            
+
         assert!(output.is_ok(), "Failed to spawn HT with Unix command");
     }
 }

@@ -1,8 +1,8 @@
 #[cfg(unix)]
 use nix::libc::{self, CODESET, LC_ALL};
+use std::env;
 #[cfg(unix)]
 use std::ffi::CStr;
-use std::env;
 
 pub fn check_utf8_locale() -> anyhow::Result<()> {
     #[cfg(unix)]
