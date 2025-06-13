@@ -34,6 +34,11 @@ impl Cli {
 #[derive(Debug, Clone)]
 pub struct Size(pty::Winsize);
 
+impl Default for Cli {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Size {
     pub fn cols(&self) -> usize {
         self.0.ws_col as usize
