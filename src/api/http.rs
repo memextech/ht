@@ -2,13 +2,13 @@ use super::Subscription;
 use crate::session;
 use anyhow::Result;
 use axum::{
-    Router,
-    extract::{Query, State, connect_info::ConnectInfo, ws},
-    http::{StatusCode, Uri, header},
+    extract::{connect_info::ConnectInfo, ws, Query, State},
+    http::{header, StatusCode, Uri},
     response::IntoResponse,
     routing::get,
+    Router,
 };
-use futures_util::{StreamExt, sink, stream};
+use futures_util::{sink, stream, StreamExt};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::json;

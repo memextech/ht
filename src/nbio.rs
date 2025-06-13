@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind, Read};
 use std::{io::Write, os::fd::RawFd};
 
 pub fn set_non_blocking(fd: &RawFd) -> Result<(), io::Error> {
-    use nix::fcntl::{FcntlArg::*, OFlag, fcntl};
+    use nix::fcntl::{fcntl, FcntlArg::*, OFlag};
 
     let flags = fcntl(*fd, F_GETFL)?;
     let mut oflags = OFlag::from_bits_truncate(flags);
