@@ -17,12 +17,14 @@ pub fn set_non_blocking(fd: &RawFd) -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn set_non_blocking(_handle: &windows::Win32::Foundation::HANDLE) -> Result<(), io::Error> {
     // On Windows, we handle non-blocking I/O differently
     // This is a placeholder as winpty handles this for us
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn read<R: Read + ?Sized>(source: &mut R, buf: &mut [u8]) -> io::Result<Option<usize>> {
     match source.read(buf) {
         Ok(n) => Ok(Some(n)),
@@ -39,6 +41,7 @@ pub fn read<R: Read + ?Sized>(source: &mut R, buf: &mut [u8]) -> io::Result<Opti
     }
 }
 
+#[allow(dead_code)]
 pub fn write<W: Write + ?Sized>(sink: &mut W, buf: &[u8]) -> io::Result<Option<usize>> {
     match sink.write(buf) {
         Ok(n) => Ok(Some(n)),
