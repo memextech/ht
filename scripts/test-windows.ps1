@@ -76,7 +76,7 @@ try {
     }
 } catch {
     Write-Warning "Could not test binary execution: $_"
-    # Don't fail the test for this - it's optional
+    # Do not fail the test for this - it is optional
 }
 
 # Test 5: Check binary dependencies (optional)
