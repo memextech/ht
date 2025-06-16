@@ -131,7 +131,10 @@ mod windows_integration {
             .stderr(Stdio::piped())
             .spawn();
 
-        assert!(output.is_ok(), "Failed to spawn HT with Windows path command");
+        assert!(
+            output.is_ok(),
+            "Failed to spawn HT with Windows path command"
+        );
     }
 
     /// Test interactive Windows command execution

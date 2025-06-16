@@ -103,7 +103,7 @@ mod windows_tests {
         // Actual execution testing is done in CI
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>(100);
         let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(100);
-        
+
         let winsize = Winsize {
             ws_col: 80,
             ws_row: 24,
@@ -111,7 +111,7 @@ mod windows_tests {
 
         // Test that spawn function exists and has correct signature
         let result = spawn("echo test".to_string(), winsize, input_rx, output_tx);
-        
+
         // We just verify it returns the expected Result type
         assert!(result.is_ok());
     }
@@ -124,7 +124,10 @@ mod windows_tests {
             ("", vec!["cmd.exe"]),
             ("dir", vec!["cmd.exe", "/c", "dir"]),
             ("echo hello", vec!["cmd.exe", "/c", "echo hello"]),
-            ("powershell -Command Get-Process", vec!["cmd.exe", "/c", "powershell -Command Get-Process"]),
+            (
+                "powershell -Command Get-Process",
+                vec!["cmd.exe", "/c", "powershell -Command Get-Process"],
+            ),
         ];
 
         for (command, expected_parts) in scenarios {
@@ -150,12 +153,7 @@ mod windows_tests {
     #[test]
     fn test_windows_environment() {
         // Test that we can handle Windows-style environment variables
-        let test_cases = vec![
-            "%USERNAME%",
-            "%USERPROFILE%",
-            "%PATH%",
-            "%TEMP%",
-        ];
+        let test_cases = vec!["%USERNAME%", "%USERPROFILE%", "%PATH%", "%TEMP%"];
 
         for env_var in test_cases {
             // Just test that the string format is recognized
