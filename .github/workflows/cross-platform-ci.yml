@@ -107,23 +107,71 @@ jobs:
       shell: powershell
       run: |
         Write-Host "Checking for Windows binary..."
-        if (Test-Path "target\release\ht.exe") {
-          $binary = Get-Item "target\release\ht.exe"
-          Write-Host "✓ Binary found: $($binary.Length) bytes"
-        } else {
-          Write-Host "❌ Binary not found at target\release\ht.exe"
-          Write-Host "Contents of target\release:"
+        Write-Host "Current directory: $(Get-Location)"
+        
+        # Check target directory structure
+        Write-Host "Target directory contents:"
+        if (Test-Path "target") {
+          Get-ChildItem "target" -Name
+          Write-Host "Target\release directory contents:"
           if (Test-Path "target\release") {
             Get-ChildItem "target\release" | Format-Table Name, Length
           } else {
             Write-Host "target\release directory does not exist"
           }
+        } else {
+          Write-Host "target directory does not exist"
+        }
+        
+        # Check for various possible binary names
+        $possibleBinaries = @(
+          "target\release\ht.exe",
+          "target\release\ht-core.exe", 
+          "target\x86_64-pc-windows-msvc\release\ht.exe",
+          "target\x86_64-pc-windows-msvc\release\ht-core.exe"
+        )
+        
+        $foundBinary = $null
+        foreach ($binaryPath in $possibleBinaries) {
+          if (Test-Path $binaryPath) {
+            $binary = Get-Item $binaryPath
+            Write-Host "✓ Found binary at: $binaryPath ($($binary.Length) bytes)"
+            $foundBinary = $binaryPath
+            break
+          }
+        }
+        
+        if (-not $foundBinary) {
+          Write-Host "❌ No binary found at any expected location"
           exit 1
         }
     
     - name: Run Windows-specific tests
       shell: powershell
-      run: .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"
+      run: |
+        # Find the binary first
+        $binaryPath = $null
+        $possibleBinaries = @(
+          "target\release\ht.exe",
+          "target\release\ht-core.exe", 
+          "target\x86_64-pc-windows-msvc\release\ht.exe",
+          "target\x86_64-pc-windows-msvc\release\ht-core.exe"
+        )
+        
+        foreach ($path in $possibleBinaries) {
+          if (Test-Path $path) {
+            $binaryPath = $path
+            break
+          }
+        }
+        
+        if (-not $binaryPath) {
+          Write-Host "❌ No binary found for testing"
+          exit 1
+        }
+        
+        Write-Host "Using binary: $binaryPath"
+        .\scripts\test-windows.ps1 -BinaryPath $binaryPath
     
     - name: Upload Windows binary
       uses: actions/upload-artifact@v4
