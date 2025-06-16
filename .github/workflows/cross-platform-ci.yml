@@ -103,6 +103,24 @@ jobs:
     - name: Build release
       run: cargo build --release --verbose
     
+    - name: Verify Windows binary exists
+      shell: powershell
+      run: |
+        Write-Host "Checking for Windows binary..."
+        if (Test-Path "target\release\ht.exe") {
+          $binary = Get-Item "target\release\ht.exe"
+          Write-Host "✓ Binary found: $($binary.Length) bytes"
+        } else {
+          Write-Host "❌ Binary not found at target\release\ht.exe"
+          Write-Host "Contents of target\release:"
+          if (Test-Path "target\release") {
+            Get-ChildItem "target\release" | Format-Table Name, Length
+          } else {
+            Write-Host "target\release directory does not exist"
+          }
+          exit 1
+        }
+    
     - name: Run Windows-specific tests
       shell: powershell
       run: .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"

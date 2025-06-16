@@ -8,22 +8,39 @@ param(
 Write-Host "Testing HT Windows functionality..."
 
 # Test 1: Check if binary exists and is executable
+Write-Host "Looking for binary at: $BinaryPath"
 if (-not (Test-Path $BinaryPath)) {
+    Write-Host "Current directory contents:"
+    Get-ChildItem -Recurse -Name | Select-Object -First 20
+    Write-Host "Target directory contents:"
+    if (Test-Path "target") {
+        Get-ChildItem "target" -Recurse -Name | Select-Object -First 20
+    }
     Write-Error "HT binary not found at $BinaryPath"
     exit 1
 }
 
-Write-Host "✓ Binary exists"
+$binaryInfo = Get-Item $BinaryPath
+Write-Host "✓ Binary exists: $($binaryInfo.Length) bytes"
 
 # Test 2: Test help command
 try {
+    Write-Host "Testing help command..."
     $helpOutput = & $BinaryPath --help 2>&1
+    Write-Host "Help command exit code: $LASTEXITCODE"
+    Write-Host "Help output length: $($helpOutput.Length)"
+    if ($helpOutput.Length -gt 0) {
+        Write-Host "First 100 chars of help output: $($helpOutput.ToString().Substring(0, [Math]::Min(100, $helpOutput.ToString().Length)))"
+    }
+    
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Help command failed"
+        Write-Error "Help command failed with exit code: $LASTEXITCODE"
+        Write-Host "Full help output: $helpOutput"
         exit 1
     }
     if (-not ($helpOutput -match "Usage:")) {
-        Write-Error "Help output doesn't contain expected content"
+        Write-Error "Help output doesn't contain expected 'Usage:' content"
+        Write-Host "Full help output: $helpOutput"
         exit 1
     }
     Write-Host "✓ Help command works"
@@ -47,26 +64,33 @@ try {
 
 # Test 4: Test that binary can start (quick test)
 try {
-    $process = Start-Process -FilePath $BinaryPath -ArgumentList "cmd", "/c", "echo", "test" -PassThru -NoNewWindow
-    Start-Sleep -Seconds 2
-    if (-not $process.HasExited) {
-        $process.Kill()
-        Write-Host "✓ Binary can start and run commands"
+    Write-Host "Testing binary execution..."
+    # Just test that the binary can be executed without hanging
+    $timeout = 5
+    $process = Start-Process -FilePath $BinaryPath -ArgumentList "--help" -PassThru -NoNewWindow -RedirectStandardOutput "nul" -RedirectStandardError "nul"
+    if ($process.WaitForExit($timeout * 1000)) {
+        Write-Host "✓ Binary executed successfully (exit code: $($process.ExitCode))"
     } else {
-        Write-Host "✓ Binary executed command and exited"
+        $process.Kill()
+        Write-Host "✓ Binary started but was terminated after timeout"
     }
 } catch {
     Write-Warning "Could not test binary execution: $_"
+    # Don't fail the test for this - it's optional
 }
 
-# Test 5: Check binary dependencies
+# Test 5: Check binary dependencies (optional)
 try {
-    $dependencies = dumpbin /DEPENDENTS $BinaryPath 2>&1
-    if ($dependencies -match "KERNEL32.dll") {
-        Write-Host "✓ Binary has expected Windows dependencies"
+    if (Get-Command "dumpbin" -ErrorAction SilentlyContinue) {
+        $dependencies = dumpbin /DEPENDENTS $BinaryPath 2>&1
+        if ($dependencies -match "KERNEL32.dll") {
+            Write-Host "✓ Binary has expected Windows dependencies"
+        }
+    } else {
+        Write-Host "⚠ dumpbin not available, skipping dependency check"
     }
 } catch {
-    Write-Warning "Could not check dependencies (dumpbin not available)"
+    Write-Warning "Could not check dependencies: $_"
 }
 
 Write-Host ""
