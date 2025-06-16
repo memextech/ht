@@ -21,7 +21,7 @@ if (-not (Test-Path $BinaryPath)) {
 }
 
 $binaryInfo = Get-Item $BinaryPath
-Write-Host "✓ Binary exists: $($binaryInfo.Length) bytes"
+Write-Host "Binary exists: $($binaryInfo.Length) bytes"
 
 # Test 2: Test help command
 try {
@@ -43,7 +43,7 @@ try {
         Write-Host "Full help output: $helpOutput"
         exit 1
     }
-    Write-Host "✓ Help command works"
+    Write-Host "Help command works"
 } catch {
     Write-Error "Failed to run help command: $_"
     exit 1
@@ -56,7 +56,7 @@ try {
         Write-Error "Version command failed"
         exit 1
     }
-    Write-Host "✓ Version command works: $versionOutput"
+    Write-Host "Version command works: $versionOutput"
 } catch {
     Write-Error "Failed to run version command: $_"
     exit 1
@@ -69,10 +69,10 @@ try {
     $timeout = 5
     $process = Start-Process -FilePath $BinaryPath -ArgumentList "--help" -PassThru -NoNewWindow -RedirectStandardOutput "nul" -RedirectStandardError "nul"
     if ($process.WaitForExit($timeout * 1000)) {
-        Write-Host "✓ Binary executed successfully (exit code: $($process.ExitCode))"
+        Write-Host "Binary executed successfully (exit code: $($process.ExitCode))"
     } else {
         $process.Kill()
-        Write-Host "✓ Binary started but was terminated after timeout"
+        Write-Host "Binary started but was terminated after timeout"
     }
 } catch {
     Write-Warning "Could not test binary execution: $_"
@@ -84,15 +84,15 @@ try {
     if (Get-Command "dumpbin" -ErrorAction SilentlyContinue) {
         $dependencies = dumpbin /DEPENDENTS $BinaryPath 2>&1
         if ($dependencies -match "KERNEL32.dll") {
-            Write-Host "✓ Binary has expected Windows dependencies"
+            Write-Host "Binary has expected Windows dependencies"
         }
     } else {
-        Write-Host "⚠ dumpbin not available, skipping dependency check"
+        Write-Host "Warning: dumpbin not available, skipping dependency check"
     }
 } catch {
     Write-Warning "Could not check dependencies: $_"
 }
 
 Write-Host ""
-Write-Host "🎉 All Windows tests passed!"
+Write-Host "All Windows tests passed!"
 Write-Host "HT appears to be working correctly on Windows."

@@ -135,14 +135,14 @@ jobs:
         foreach ($binaryPath in $possibleBinaries) {
           if (Test-Path $binaryPath) {
             $binary = Get-Item $binaryPath
-            Write-Host "✓ Found binary at: $binaryPath ($($binary.Length) bytes)"
+            Write-Host "Found binary at: $binaryPath ($($binary.Length) bytes)"
             $foundBinary = $binaryPath
             break
           }
         }
         
         if (-not $foundBinary) {
-          Write-Host "❌ No binary found at any expected location"
+          Write-Host "No binary found at any expected location"
           exit 1
         }
     
@@ -166,7 +166,7 @@ jobs:
         }
         
         if (-not $binaryPath) {
-          Write-Host "❌ No binary found for testing"
+          Write-Host "No binary found for testing"
           exit 1
         }
         
@@ -189,9 +189,9 @@ jobs:
     - name: Check if all builds succeeded
       run: |
         if [[ "${{ needs.unix-build.result }}" == "success" && "${{ needs.windows-build.result }}" == "success" ]]; then
-          echo "✅ All cross-platform builds passed!"
+          echo "All cross-platform builds passed!"
         else
-          echo "❌ Some builds failed:"
+          echo "Some builds failed:"
           echo "Unix builds: ${{ needs.unix-build.result }}"
           echo "Windows build: ${{ needs.windows-build.result }}"
           exit 1
