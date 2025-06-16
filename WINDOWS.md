@@ -1,10 +1,19 @@
 # HT Windows Support
 
-This document describes the Windows support implementation for HT (headless terminal).
+This document provides comprehensive information about Windows support in HT (headless terminal).
+
+> **Quick Start**: See the [Windows Support section in README.md](README.md#windows-support) for basic usage instructions.
 
 ## Overview
 
 HT now supports Windows through a cross-platform architecture that provides the same JSON API across Unix and Windows systems. While Unix systems use true PTY (pseudoterminal) functionality, Windows uses a process-based approach with pipes to provide similar functionality.
+
+**Key Benefits:**
+- ✅ Same JSON API across all platforms
+- ✅ Native Windows process integration
+- ✅ Support for both cmd.exe and PowerShell
+- ✅ Automated Windows CI testing
+- ✅ Cross-compilation support
 
 ## Architecture
 
@@ -87,20 +96,30 @@ echo '{"type": "sendKeys", "keys": ["mybatch.bat", "Enter"]}' | .\ht.exe --subsc
 # Run all tests
 cargo test
 
-# Run Windows-specific tests
-cargo test --test integration windows
+# Run Windows-specific tests only
+cargo test --test integration windows_integration
 
-# Run custom Windows validation
-.\scripts\test-windows.ps1
+# Run unit tests with Windows conditionals
+cargo test windows_tests
+
+# Test cross-compilation (from Unix)
+cargo check --target x86_64-pc-windows-msvc
 ```
 
 ### CI/CD
 
-Windows builds are tested automatically via GitHub Actions:
-- Compilation verification
-- Unit and integration tests  
-- Binary functionality validation
-- Cross-platform compatibility checks
+Windows builds are tested automatically via GitHub Actions in `.github/workflows/windows-ci.yml`:
+- **Compilation verification**: Ensures Windows builds compile cleanly
+- **Unit and integration tests**: Runs all Windows-specific test scenarios
+- **Binary functionality validation**: Tests `--help`, `--version`, and basic commands
+- **Cross-platform compatibility checks**: Verifies Unix functionality remains intact
+
+The CI automatically tests:
+- Windows cmd.exe integration
+- PowerShell execution
+- Process lifecycle management
+- JSON API compatibility
+- Error handling scenarios
 
 ## Limitations
 
@@ -123,43 +142,75 @@ Windows builds are tested automatically via GitHub Actions:
 From any platform with Rust installed:
 
 ```bash
-# Add Windows target
+# Add Windows target (if not already present)
 rustup target add x86_64-pc-windows-msvc
 
 # Cross-compile to Windows
 cargo build --target x86_64-pc-windows-msvc --release
+
+# Build debug version for testing
+cargo build --target x86_64-pc-windows-msvc
 ```
 
-### Platform-Specific Code
+### Platform-Specific Code Architecture
 
-The codebase uses conditional compilation:
+The codebase uses conditional compilation throughout:
 
 ```rust
+// Platform-specific dependencies in Cargo.toml
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [...] }
+
+[target.'cfg(unix)'.dependencies]  
+nix = { version = "0.28.0", features = [...] }
+
+// Platform-specific implementations
 #[cfg(windows)]
-fn windows_specific_function() {
-    // Windows implementation
+pub fn spawn(command: String, winsize: Winsize, ...) -> Result<...> {
+    // Windows implementation using tokio::process
 }
 
-#[cfg(unix)]  
-fn unix_specific_function() {
-    // Unix implementation
+#[cfg(unix)]
+pub fn spawn(command: String, winsize: Winsize, ...) -> Result<...> {
+    // Unix implementation using nix::pty::forkpty
 }
 ```
+
+**Key Architecture Files:**
+- `src/pty.rs` - Platform-specific PTY implementations
+- `src/locale.rs` - Platform-specific locale handling
+- `src/nbio.rs` - Non-blocking I/O abstractions
+- `Cargo.toml` - Conditional dependency management
 
 ### Testing Changes
 
-Always test on both platforms:
+Development workflow for Windows support:
 
 ```bash
-# Test on Unix
+# 1. Test Unix functionality (ensure no regressions)
 cargo test
+cargo clippy
+cargo fmt --check
 
-# Test on Windows (if available)
-cargo test --target x86_64-pc-windows-msvc
+# 2. Test Windows compilation (cross-compile check)
+cargo check --target x86_64-pc-windows-msvc
 
-# Use GitHub Actions for Windows testing
+# 3. Push to trigger Windows CI
 git push origin windows-support
+
+# 4. Check GitHub Actions for Windows test results
+# Actions run Windows-specific integration tests automatically
 ```
+
+### Code Style Guidelines
+
+When adding Windows-specific code:
+
+1. **Use conditional compilation**: Always use `#[cfg(windows)]`/`#[cfg(unix)]`
+2. **Maintain API compatibility**: Same function signatures across platforms
+3. **Document platform differences**: Add comments explaining Windows-specific behavior
+4. **Test thoroughly**: Add Windows-specific tests in `src/tests.rs` and `tests/integration.rs`
+5. **Update documentation**: Keep WINDOWS.md and README.md updated
 
 ## Troubleshooting
 
@@ -198,3 +249,57 @@ When contributing Windows-related changes:
 5. Ensure CI passes on all platforms
 
 The Windows implementation aims to provide the same developer experience as Unix while working within Windows constraints.
+
+## Future Improvements
+
+### Planned Enhancements
+
+1. **Windows ConPTY Integration**
+   - Integrate with Windows Console Pseudoterminal (ConPTY) API
+   - Provide true PTY functionality on Windows 10+
+   - Better terminal application compatibility
+
+2. **Enhanced Terminal Control**
+   - ANSI/VT100 escape sequence processing
+   - Cursor positioning and terminal manipulation
+   - Color and formatting support
+
+3. **Improved PowerShell Integration**
+   - Native PowerShell object handling
+   - Better cmdlet support
+   - PowerShell ISE compatibility
+
+4. **Performance Optimizations**
+   - Reduce process creation overhead
+   - Optimize pipe-based I/O
+   - Better resource management
+
+### Contributing to Windows Support
+
+The Windows implementation is actively maintained. Contributions are welcome in:
+
+- **Testing**: Real Windows hardware testing
+- **Performance**: Optimization improvements
+- **Compatibility**: Support for more Windows applications
+- **Documentation**: Usage examples and troubleshooting
+
+**Development Process:**
+1. Create feature branch from `windows-support`
+2. Implement changes with proper conditional compilation
+3. Add platform-specific tests
+4. Ensure CI passes on all platforms
+5. Update documentation
+6. Submit pull request
+
+### Known Issues & Workarounds
+
+**Issue**: Some terminal applications don't work correctly
+**Workaround**: Use applications designed for pipe-based I/O
+
+**Issue**: No signal handling for graceful shutdown
+**Workaround**: Use process termination instead of signals
+
+**Issue**: Limited job control features
+**Workaround**: Manage processes individually rather than in groups
+
+For the latest status and to report issues, see the [GitHub Issues](https://github.com/memextech/ht/issues) page.

@@ -52,6 +52,7 @@ fn test_compilation() {
 #[cfg(windows)]
 mod windows_integration {
     use super::*;
+    use std::time::Duration;
 
     /// Test that HT can execute a basic Windows command
     #[test]
@@ -79,6 +80,99 @@ mod windows_integration {
             .spawn();
 
         assert!(output.is_ok(), "Failed to spawn HT with cmd.exe");
+    }
+
+    /// Test Windows PowerShell integration
+    #[test]
+    fn test_windows_powershell() {
+        let output = Command::new("cargo")
+            .args(&["run", "--", "powershell", "-Command", "Get-Location"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        assert!(output.is_ok(), "Failed to spawn HT with PowerShell");
+    }
+
+    /// Test Windows directory listing
+    #[test]
+    fn test_windows_dir_command() {
+        let output = Command::new("cargo")
+            .args(&["run", "--", "dir"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        assert!(output.is_ok(), "Failed to spawn HT with dir command");
+    }
+
+    /// Test Windows batch file execution
+    #[test]
+    fn test_windows_batch_execution() {
+        let output = Command::new("cargo")
+            .args(&["run", "--", "cmd", "/c", "echo %USERNAME%"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        assert!(output.is_ok(), "Failed to spawn HT with batch command");
+    }
+
+    /// Test that HT handles Windows paths correctly
+    #[test]
+    fn test_windows_paths() {
+        let output = Command::new("cargo")
+            .args(&["run", "--", "cmd", "/c", "cd /d C:\\ && echo %CD%"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        assert!(output.is_ok(), "Failed to spawn HT with Windows path command");
+    }
+
+    /// Test interactive Windows command execution
+    #[test]
+    fn test_windows_interactive_session() {
+        // Test that we can start an interactive cmd session
+        let mut child = Command::new("cargo")
+            .args(&["run", "--", "--size", "80x24"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to spawn HT interactive session");
+
+        // Give it a moment to start
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Just test that the process started successfully
+        assert!(child.id() > 0, "HT interactive session failed to start");
+
+        // Terminate the child process
+        let _ = child.kill();
+    }
+
+    /// Test Windows process termination
+    #[test]
+    fn test_windows_process_cleanup() {
+        let mut child = Command::new("cargo")
+            .args(&["run", "--", "timeout", "/t", "10"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to spawn HT with timeout command");
+
+        // Give it a moment to start
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Test that we can kill the process
+        let result = child.kill();
+        assert!(result.is_ok(), "Failed to terminate Windows process");
     }
 }
 

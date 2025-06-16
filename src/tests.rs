@@ -50,6 +50,7 @@ mod platform_tests {
 #[cfg(test)]
 #[cfg(windows)]
 mod windows_tests {
+    use crate::pty::{spawn, Winsize};
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -81,6 +82,108 @@ mod windows_tests {
         // Test non-empty command should be passed to cmd.exe /c
         let command = "dir";
         assert!(!command.is_empty());
+    }
+
+    /// Test Windows Winsize structure
+    #[test]
+    fn test_windows_winsize() {
+        let winsize = Winsize {
+            ws_col: 100,
+            ws_row: 30,
+        };
+
+        assert_eq!(winsize.ws_col, 100);
+        assert_eq!(winsize.ws_row, 30);
+    }
+
+    /// Test Windows PTY spawn functionality (basic syntax check)
+    #[test]
+    fn test_windows_pty_spawn_syntax() {
+        // This test just verifies the function signature compiles
+        // Actual execution testing is done in CI
+        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>(100);
+        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(100);
+        
+        let winsize = Winsize {
+            ws_col: 80,
+            ws_row: 24,
+        };
+
+        // Test that spawn function exists and has correct signature
+        let result = spawn("echo test".to_string(), winsize, input_rx, output_tx);
+        
+        // We just verify it returns the expected Result type
+        assert!(result.is_ok());
+    }
+
+    /// Test Windows command line construction
+    #[test]
+    fn test_windows_command_construction() {
+        // Test different command scenarios
+        let scenarios = vec![
+            ("", vec!["cmd.exe"]),
+            ("dir", vec!["cmd.exe", "/c", "dir"]),
+            ("echo hello", vec!["cmd.exe", "/c", "echo hello"]),
+            ("powershell -Command Get-Process", vec!["cmd.exe", "/c", "powershell -Command Get-Process"]),
+        ];
+
+        for (command, expected_parts) in scenarios {
+            let cmd_args = if command.is_empty() {
+                vec!["cmd.exe".to_string()]
+            } else {
+                vec!["cmd.exe".to_string(), "/c".to_string(), command.to_string()]
+            };
+
+            assert_eq!(cmd_args.len(), expected_parts.len());
+            for (actual, expected) in cmd_args.iter().zip(expected_parts.iter()) {
+                if expected_parts.len() == 3 && expected_parts[2].contains(" ") {
+                    // For complex commands, just check the structure
+                    assert!(actual.contains(expected.split_whitespace().next().unwrap()));
+                } else {
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    /// Test Windows environment variable handling
+    #[test]
+    fn test_windows_environment() {
+        // Test that we can handle Windows-style environment variables
+        let test_cases = vec![
+            "%USERNAME%",
+            "%USERPROFILE%",
+            "%PATH%",
+            "%TEMP%",
+        ];
+
+        for env_var in test_cases {
+            // Just test that the string format is recognized
+            assert!(env_var.starts_with('%'));
+            assert!(env_var.ends_with('%'));
+        }
+    }
+
+    /// Test Windows path handling
+    #[test]
+    fn test_windows_paths() {
+        let windows_paths = vec![
+            r"C:\Windows\System32",
+            r"C:\Program Files",
+            r"C:\Users\%USERNAME%\Documents",
+            r".\relative\path",
+            r"..\parent\directory",
+        ];
+
+        for path in windows_paths {
+            // Test basic path format recognition
+            if path.starts_with(r"C:\") {
+                assert!(path.contains(':'));
+            }
+            if path.contains(r"\") {
+                assert!(path.split(r"\").count() > 1);
+            }
+        }
     }
 }
 

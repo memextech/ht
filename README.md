@@ -1,6 +1,6 @@
 # ht - headless terminal
 
-`ht` (short for *headless terminal*) is a command line program that wraps an arbitrary other binary (e.g. `bash`, `vim`, etc.) with a VT100 style terminal interface--i.e. a pseudoterminal client (PTY) plus terminal server--and allows easy programmatic access to the input and output of that terminal (via JSON over STDIN/STDOUT). `ht` is built in rust and works on MacOS and Linux.
+`ht` (short for *headless terminal*) is a command line program that wraps an arbitrary other binary (e.g. `bash`, `vim`, etc.) with a VT100 style terminal interface--i.e. a pseudoterminal client (PTY) plus terminal server--and allows easy programmatic access to the input and output of that terminal (via JSON over STDIN/STDOUT). `ht` is built in rust and works on MacOS, Linux, and Windows.
 
 <img src="https://andykonwinski.com/assets/img/headless-terminal.png" alt="screenshot of raw terminal output vs ht output" align="right" style="width:450px">
 
@@ -44,6 +44,82 @@ cargo build --release
 This produces the binary in _release mode_ (`--release`) at
 `target/release/ht`. There are no other build artifacts so you can just
 copy the binary to a directory in your `$PATH`.
+
+## Windows Support
+
+HT now supports Windows platforms in addition to Unix-like systems. The Windows implementation uses process pipes as a substitute for PTY functionality while maintaining the same JSON API.
+
+### Windows Requirements
+
+- Windows 10 or later
+- Rust toolchain with the `x86_64-pc-windows-msvc` target
+
+### Building for Windows
+
+From any platform with Rust installed:
+
+```powershell
+# Add Windows target (if cross-compiling)
+rustup target add x86_64-pc-windows-msvc
+
+# Build for Windows
+cargo build --target x86_64-pc-windows-msvc --release
+```
+
+### Windows-Specific Usage
+
+On Windows, `ht` uses `cmd.exe` as the default shell:
+
+```powershell
+# Start a cmd.exe session
+ht.exe
+
+# Run a specific command
+ht.exe "echo Hello Windows"
+
+# Start PowerShell instead
+ht.exe powershell
+
+# Specify window size
+ht.exe --size 80x24 cmd
+```
+
+### Windows Examples
+
+```powershell
+# Directory listing
+echo '{"type": "sendKeys", "keys": ["dir", "Enter"]}' | ht.exe --subscribe output
+
+# PowerShell command
+echo '{"type": "sendKeys", "keys": ["Get-Process", "Enter"]}' | ht.exe powershell --subscribe output
+
+# Batch file execution
+echo '{"type": "sendKeys", "keys": ["mybatch.bat", "Enter"]}' | ht.exe --subscribe output
+```
+
+### Windows Limitations
+
+- **No True PTY**: Uses process pipes instead of pseudoterminals
+- **Limited Signal Support**: No Unix-style signal handling (SIGTERM, SIGHUP, etc.)
+- **No Terminal Control Sequences**: Limited VT100/ANSI escape sequence processing
+- **Process Management**: Basic process lifecycle management compared to Unix
+
+### Windows Troubleshooting
+
+**Binary doesn't start**
+- Ensure Windows Defender isn't blocking the executable
+- Try running from PowerShell as Administrator
+- Check that all required DLLs are available
+
+**Commands don't work as expected**
+- Remember that Windows uses `cmd.exe` by default
+- Use PowerShell explicitly if needed: `ht.exe powershell`
+- Use Windows-style paths with backslashes
+
+**Performance considerations**
+- Windows process creation is slower than Unix fork()
+- Consider using fewer, longer-running commands
+- Monitor resource usage with Task Manager
 
 ## Usage
 
