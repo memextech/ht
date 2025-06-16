@@ -48,17 +48,26 @@ Making the `ht` (headless terminal) tool work on Windows. The original project o
 - ✅ Unix functionality preserved
 - ✅ Windows compilation working
 - ✅ Basic Windows PTY substitute using tokio::process
-- ✅ CI pipeline setup
+- ✅ CI pipeline setup with improved error handling
 - ✅ Successfully rebased onto latest fix/clippy-warnings branch (dbe4c75)
 - ✅ All clippy warnings resolved and code properly formatted
 - ✅ Fixed duplicate Default implementation conflicts during rebase
-- ⚠️  Windows testing needs validation on actual Windows systems
+- ✅ PowerShell syntax issues resolved (apostrophe handling)
+- ✅ Enhanced CI with syntax validation and better debugging
+- 🔄 Currently testing the complete Windows CI pipeline
 
 ### Known Limitations
 1. Windows implementation uses cmd.exe pipes instead of true PTY
 2. No terminal control sequences translation for Windows
 3. Window resizing may not work properly on Windows
 4. Signal handling differences between platforms
+
+### PowerShell Script Guidelines
+**CRITICAL**: PowerShell scripts must avoid apostrophes (') in strings and comments
+- Use "do not" instead of "don't"
+- Use "does not" instead of "doesn't"
+- Avoid single quotes within double-quoted strings
+- CI includes syntax validation to catch these issues early
 
 ## Iteration Strategy
 1. Get basic Windows build working (DONE)
@@ -76,4 +85,13 @@ Making the `ht` (headless terminal) tool work on Windows. The original project o
 - `cargo check` - Check compilation on current platform
 - `cargo build --release` - Build release binary
 - `git push origin windows-support` - Trigger Windows CI
+- `gh run list --limit 5` - Check recent CI runs
+- `gh run view <run_id> --log-failed` - Get detailed error logs
+- `rg -n "'" scripts/test-windows.ps1` - Check for problematic apostrophes
 - Check GitHub Actions for Windows build results
+
+## Error Prevention
+1. **PowerShell Syntax**: Always avoid apostrophes in PowerShell scripts
+2. **CI Validation**: The CI now includes PowerShell syntax validation
+3. **Error Handling**: Enhanced error messages and debugging information
+4. **Binary Verification**: CI checks binary existence before testing

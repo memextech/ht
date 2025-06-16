@@ -65,7 +65,7 @@ jobs:
           $errors | ForEach-Object { Write-Error $_ }
           exit 1
         }
-        Write-Host "✓ PowerShell script syntax is valid"
+        Write-Host "PowerShell script syntax is valid"
     
     - name: Run Windows-specific tests
       shell: powershell
@@ -73,7 +73,7 @@ jobs:
         Write-Host "Current working directory: $(Get-Location)"
         Write-Host "Checking if binary exists: target\release\ht.exe"
         if (Test-Path "target\release\ht.exe") {
-          Write-Host "✓ Binary found"
+          Write-Host "Binary found"
           Write-Host "Running Windows-specific tests..."
           .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"
         } else {
