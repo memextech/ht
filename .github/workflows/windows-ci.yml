@@ -54,9 +54,34 @@ jobs:
     - name: Test release binary version
       run: .\target\release\ht.exe --version
     
+    - name: Validate PowerShell script syntax
+      shell: powershell
+      run: |
+        Write-Host "Validating PowerShell script syntax..."
+        $errors = $null
+        [System.Management.Automation.PSParser]::Tokenize((Get-Content "scripts\test-windows.ps1" -Raw), [ref]$errors)
+        if ($errors) {
+          Write-Error "PowerShell syntax errors found:"
+          $errors | ForEach-Object { Write-Error $_ }
+          exit 1
+        }
+        Write-Host "✓ PowerShell script syntax is valid"
+    
     - name: Run Windows-specific tests
       shell: powershell
-      run: .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"
+      run: |
+        Write-Host "Current working directory: $(Get-Location)"
+        Write-Host "Checking if binary exists: target\release\ht.exe"
+        if (Test-Path "target\release\ht.exe") {
+          Write-Host "✓ Binary found"
+          Write-Host "Running Windows-specific tests..."
+          .\scripts\test-windows.ps1 -BinaryPath "target\release\ht.exe"
+        } else {
+          Write-Error "Binary not found at target\release\ht.exe"
+          Write-Host "Directory contents:"
+          Get-ChildItem -Recurse target | Select-Object -First 20
+          exit 1
+        }
     
     - name: Verify binary size (should be reasonable)
       shell: powershell

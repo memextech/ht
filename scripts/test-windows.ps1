@@ -39,7 +39,7 @@ try {
         exit 1
     }
     if (-not ($helpOutput -match "Usage:")) {
-        Write-Error "Help output doesn't contain expected 'Usage:' content"
+        Write-Error "Help output does not contain expected Usage: content"
         Write-Host "Full help output: $helpOutput"
         exit 1
     }
