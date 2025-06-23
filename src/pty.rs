@@ -24,9 +24,9 @@ use std::fs::File;
 #[cfg(unix)]
 use std::io;
 #[cfg(unix)]
-use std::os::fd::FromRawFd;
+use std::mem::ManuallyDrop;
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(unix)]
 use tokio::io::unix::AsyncFd;
 
@@ -101,8 +101,25 @@ async fn do_drive_child(
     let mut buf = [0u8; READ_BUF_SIZE];
     let mut input: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
     nbio::set_non_blocking(&master.as_raw_fd())?;
-    let mut master_file = unsafe { File::from_raw_fd(master.as_raw_fd()) };
+    
+    // FIXED: File descriptor double-close bug
+    // 
+    // Previously, we created both a File and an AsyncFd that owned the same FD:
+    //   let mut master_file = unsafe { File::from_raw_fd(master.as_raw_fd()) };
+    //   let master_fd = AsyncFd::new(master)?;
+    // This caused "IO Safety violation: owned file descriptor already closed" 
+    // when both objects tried to close the FD on drop.
+    //
+    // Solution: Use single ownership model where AsyncFd owns the FD,
+    // and File is wrapped in ManuallyDrop to prevent double-close.
+    
+    // Create AsyncFd, which takes ownership of the OwnedFd
     let master_fd = AsyncFd::new(master)?;
+    
+    // Get a File handle that shares the same FD but doesn't own it
+    // ManuallyDrop prevents this File from closing the FD on drop
+    let raw_fd = master_fd.get_ref().as_raw_fd();
+    let mut master_file = ManuallyDrop::new(unsafe { File::from_raw_fd(raw_fd) });
 
     loop {
         tokio::select! {
@@ -122,7 +139,7 @@ async fn do_drive_child(
                 let mut guard = result?;
 
                 loop {
-                    match nbio::read(&mut master_file, &mut buf)? {
+                    match nbio::read(&mut *master_file, &mut buf)? {
                         Some(0) => {
                             return Ok(());
                         }
@@ -144,7 +161,7 @@ async fn do_drive_child(
                 let mut buf: &[u8] = input.as_ref();
 
                 loop {
-                    match nbio::write(&mut master_file, buf)? {
+                    match nbio::write(&mut *master_file, buf)? {
                         Some(0) => {
                             return Ok(());
                         }
