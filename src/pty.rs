@@ -101,21 +101,21 @@ async fn do_drive_child(
     let mut buf = [0u8; READ_BUF_SIZE];
     let mut input: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
     nbio::set_non_blocking(&master.as_raw_fd())?;
-    
+
     // FIXED: File descriptor double-close bug
-    // 
+    //
     // Previously, we created both a File and an AsyncFd that owned the same FD:
     //   let mut master_file = unsafe { File::from_raw_fd(master.as_raw_fd()) };
     //   let master_fd = AsyncFd::new(master)?;
-    // This caused "IO Safety violation: owned file descriptor already closed" 
+    // This caused "IO Safety violation: owned file descriptor already closed"
     // when both objects tried to close the FD on drop.
     //
     // Solution: Use single ownership model where AsyncFd owns the FD,
     // and File is wrapped in ManuallyDrop to prevent double-close.
-    
+
     // Create AsyncFd, which takes ownership of the OwnedFd
     let master_fd = AsyncFd::new(master)?;
-    
+
     // Get a File handle that shares the same FD but doesn't own it
     // ManuallyDrop prevents this File from closing the FD on drop
     let raw_fd = master_fd.get_ref().as_raw_fd();

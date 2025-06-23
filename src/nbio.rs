@@ -57,5 +57,3 @@ pub fn write<W: Write + ?Sized>(sink: &mut W, buf: &[u8]) -> io::Result<Option<u
         }
     }
 }
-
-
