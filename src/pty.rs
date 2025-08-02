@@ -269,11 +269,11 @@ async fn drive_child_windows(
                 match result {
                     Some(data) => {
                         if let Err(e) = stdin.write_all(&data).await {
-                            eprintln!("Failed to write to child stdin: {}", e);
+                            eprintln!("Failed to write to child stdin: {e}");
                             break;
                         }
                         if let Err(e) = stdin.flush().await {
-                            eprintln!("Failed to flush child stdin: {}", e);
+                            eprintln!("Failed to flush child stdin: {e}");
                             break;
                         }
                     }
@@ -299,7 +299,7 @@ async fn drive_child_windows(
                         stdout_buf.clear();
                     }
                     Err(e) => {
-                        eprintln!("Failed to read from child stdout: {}", e);
+                        eprintln!("Failed to read from child stdout: {e}");
                         break;
                     }
                 }
@@ -319,7 +319,7 @@ async fn drive_child_windows(
                         stderr_buf.clear();
                     }
                     Err(e) => {
-                        eprintln!("Failed to read from child stderr: {}", e);
+                        eprintln!("Failed to read from child stderr: {e}");
                         // Continue even if stderr fails
                     }
                 }
@@ -329,7 +329,7 @@ async fn drive_child_windows(
             result = child.wait() => {
                 match result {
                     Ok(status) => {
-                        eprintln!("Child process exited with status: {}", status);
+                        eprintln!("Child process exited with status: {status}");
                         break;
                     }
                     Err(e) => {
