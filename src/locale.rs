@@ -16,9 +16,9 @@ pub fn check_utf8_locale() -> anyhow::Result<()> {
             Ok(())
         } else {
             let env = env::var("LC_ALL")
-                .map(|v| format!("LC_ALL={}", v))
-                .or(env::var("LC_CTYPE").map(|v| format!("LC_CTYPE={}", v)))
-                .or(env::var("LANG").map(|v| format!("LANG={}", v)))
+                .map(|v| format!("LC_ALL={v}"))
+                .or(env::var("LC_CTYPE").map(|v| format!("LC_CTYPE={v}")))
+                .or(env::var("LANG").map(|v| format!("LANG={v}")))
                 .unwrap_or("".to_string());
 
             Err(anyhow::anyhow!(
