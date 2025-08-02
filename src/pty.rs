@@ -333,7 +333,7 @@ async fn drive_child_windows(
                         break;
                     }
                     Err(e) => {
-                        eprintln!("Failed to wait for child process: {}", e);
+                        eprintln!("Failed to wait for child process: {e}");
                         break;
                     }
                 }
@@ -343,7 +343,7 @@ async fn drive_child_windows(
 
     // Ensure child process is terminated
     if let Err(e) = child.kill().await {
-        eprintln!("Failed to kill child process: {}", e);
+        eprintln!("Failed to kill child process: {e}");
     }
 
     Ok(())
