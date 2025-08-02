@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 #[test]
 fn test_ht_help() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--help"])
+        .args(["run", "--", "--help"])
         .output()
         .expect("Failed to execute cargo run");
 
@@ -24,21 +24,21 @@ fn test_ht_help() {
 #[test]
 fn test_ht_version() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--version"])
+        .args(["run", "--", "--version"])
         .output()
         .expect("Failed to execute cargo run");
 
     assert!(output.status.success(), "HT version command failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.3.0") || stdout.len() > 0);
+    assert!(stdout.contains("0.3.0") || !stdout.is_empty());
 }
 
 /// Test that we can compile for the current platform
 #[test]
 fn test_compilation() {
     let output = Command::new("cargo")
-        .args(&["check"])
+        .args(["check"])
         .output()
         .expect("Failed to execute cargo check");
 
@@ -187,7 +187,7 @@ mod unix_integration {
     #[test]
     fn test_unix_basic_command() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "echo", "hello"])
+            .args(["run", "--", "echo", "hello"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

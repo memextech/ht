@@ -80,7 +80,7 @@ impl HtLibrary {
         let rows = config.size.1;
 
         let pty_handle = tokio::spawn(async move {
-            let size = cli::Size::from_str(&format!("{}x{}", cols, rows)).unwrap();
+            let size = cli::Size::from_str(&format!("{cols}x{rows}")).unwrap();
             pty::spawn(command_str, *size, input_rx, output_tx)
                 .unwrap()
                 .await
