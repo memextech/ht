@@ -48,6 +48,7 @@ fn start_pty(
     output_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<JoinHandle<Result<()>>> {
     let command = command.join(" ");
+    let winsize = **size;
     eprintln!("launching \"{}\" in terminal of size {}", command, size);
 
     let size_copy = pty::Winsize {
@@ -61,7 +62,7 @@ fn start_pty(
 
     Ok(tokio::spawn(pty::spawn(
         command, size_copy, input_rx, output_tx,
-    )?))
+    )?)
 }
 
 async fn start_http_api(
