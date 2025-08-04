@@ -74,6 +74,7 @@ impl Session {
         self.vt.arrow_key_app_mode()
     }
 
+    #[allow(dead_code)]
     /// Get the current terminal text content
     pub fn get_text(&self) -> String {
         self.text_view()

@@ -48,10 +48,11 @@ fn start_pty(
     output_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<JoinHandle<Result<()>>> {
     let command = command.join(" ");
+    let winsize = **size;
     eprintln!("launching \"{}\" in terminal of size {}", command, size);
 
     Ok(tokio::spawn(pty::spawn(
-        command, size, input_rx, output_tx,
+        command, winsize, input_rx, output_tx,
     )?))
 }
 

@@ -17,11 +17,11 @@ use tokio::sync::mpsc;
 
 pub fn spawn(
     command: String,
-    winsize: &pty::Winsize,
+    winsize: pty::Winsize,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<impl Future<Output = Result<()>>> {
-    let result = unsafe { pty::forkpty(Some(winsize), None) }?;
+    let result = unsafe { pty::forkpty(Some(&winsize), None) }?;
 
     match result.fork_result {
         ForkResult::Parent { child } => Ok(drive_child(child, result.master, input_rx, output_tx)),
