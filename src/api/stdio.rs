@@ -266,7 +266,7 @@ pub fn parse_key(key: String) -> InputSeq {
                 }
 
                 ['A', '-', k] => {
-                    return standard_key(format!("\x1b{}", k));
+                    return standard_key(format!("\x1b{k}"));
                 }
 
                 _ => &key,
