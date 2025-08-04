@@ -124,7 +124,7 @@ where
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
-fn standard_key<S: ToString>(seq: S) -> InputSeq {
+pub fn standard_key<S: ToString>(seq: S) -> InputSeq {
     InputSeq::Standard(seq.to_string())
 }
 
@@ -132,7 +132,7 @@ fn cursor_key<S: ToString>(seq1: S, seq2: S) -> InputSeq {
     InputSeq::Cursor(seq1.to_string(), seq2.to_string())
 }
 
-fn parse_key(key: String) -> InputSeq {
+pub fn parse_key(key: String) -> InputSeq {
     let seq = match key.as_str() {
         "C-@" | "C-Space" | "^@" => "\x00",
         "C-[" | "Escape" | "^[" => "\x1b",
