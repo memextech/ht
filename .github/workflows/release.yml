@@ -35,6 +35,10 @@ jobs:
             target: aarch64-apple-darwin
             use-cross: false
 
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use-cross: false
+
     steps:
       - uses: actions/checkout@v3
 
@@ -53,10 +57,22 @@ jobs:
           command: build
           args: --target ${{ matrix.target }} --release --locked
 
+      - name: Set binary path
+        id: binary
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            echo "path=target/${{ matrix.target }}/release/ht.exe" >> $GITHUB_OUTPUT
+            echo "name=ht-${{ matrix.target }}.exe" >> $GITHUB_OUTPUT
+          else
+            echo "path=target/${{ matrix.target }}/release/ht" >> $GITHUB_OUTPUT
+            echo "name=ht-${{ matrix.target }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload binaries to the release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/${{ matrix.target }}/release/ht
-          asset_name: ht-${{ matrix.target }}
+          file: ${{ steps.binary.outputs.path }}
+          asset_name: ${{ steps.binary.outputs.name }}
           tag: ${{ github.ref }}
