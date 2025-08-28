@@ -133,7 +133,10 @@ pub fn cursor_key<S: ToString>(seq1: S, seq2: S) -> InputSeq {
 }
 
 pub fn parse_key(key: String) -> InputSeq {
-    let seq = match key.as_str() {
+    // First, try to normalize the key format (e.g., "control+c" -> "C-c")
+    let normalized_key = normalize_key_format(&key);
+    
+    let seq = match normalized_key.as_str() {
         "C-@" | "C-Space" | "^@" => "\x00",
         "C-[" | "Escape" | "^[" => "\x1b",
         "C-\\" | "^\\" => "\x1c",
@@ -270,12 +273,94 @@ pub fn parse_key(key: String) -> InputSeq {
                     return standard_key(format!("\x1b{k}"));
                 }
 
-                _ => &key,
+                _ => &normalized_key,
             }
         }
     };
 
     standard_key(seq)
+}
+
+fn normalize_key_format(key: &str) -> String {
+    // Handle "control+", "ctrl+", "shift+", "alt+", "option+" formats
+    // Convert them to the standard "C-", "S-", "A-" format
+    
+    // First check if it already uses the standard format
+    if key.contains("C-") || key.contains("S-") || key.contains("A-") || key.contains("^") {
+        return key.to_string();
+    }
+    
+    // Split by '+' to handle the new format
+    let parts: Vec<&str> = key.split('+').collect();
+    if parts.len() < 2 {
+        // Not a modifier+key format, return as is
+        return key.to_string();
+    }
+    
+    let mut modifiers = Vec::new();
+    let mut key_part = "";
+    
+    for (i, part) in parts.iter().enumerate() {
+        let lower_part = part.to_lowercase();
+        
+        if i == parts.len() - 1 {
+            // Last part is the key
+            key_part = part;
+        } else {
+            // Check for modifiers
+            match lower_part.as_str() {
+                "control" | "ctrl" => modifiers.push("C"),
+                "shift" => modifiers.push("S"),
+                "alt" | "option" => modifiers.push("A"),
+                _ => {
+                    // Unknown modifier, return original key
+                    return key.to_string();
+                }
+            }
+        }
+    }
+    
+    if modifiers.is_empty() || key_part.is_empty() {
+        return key.to_string();
+    }
+    
+    // Sort modifiers to ensure consistent order: C-A-S
+    modifiers.sort_by_key(|&m| match m {
+        "C" => 0,
+        "A" => 1,
+        "S" => 2,
+        _ => 3,
+    });
+    
+    // Capitalize special keys
+    let key_part_capitalized = match key_part.to_lowercase().as_str() {
+        "left" => "Left",
+        "right" => "Right",
+        "up" => "Up",
+        "down" => "Down",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" => "PageUp",
+        "pagedown" => "PageDown",
+        "space" => "Space",
+        "tab" => "Tab",
+        "enter" => "Enter",
+        "return" => "Return",
+        "escape" => "Escape",
+        k if k.starts_with("f") && k.len() <= 3 => {
+            // Handle F1-F12 keys
+            if let Ok(_) = k[1..].parse::<u32>() {
+                // Need to return owned String for F-keys
+                return format!("{}-F{}", modifiers.join("-"), &k[1..]);
+            } else {
+                key_part
+            }
+        }
+        _ => key_part,
+    };
+    
+    // Build the normalized key string
+    format!("{}-{}", modifiers.join("-"), key_part_capitalized)
 }
 
 #[cfg(test)]
@@ -464,6 +549,69 @@ mod test {
     #[test]
     fn parse_send_keys_missing_args() {
         parse_line(r#"{ "type": "sendKeys" }"#).expect_err("should fail");
+    }
+    
+    #[test]
+    fn parse_send_keys_new_format() {
+        // Test the new "control+", "ctrl+", "shift+", "alt+", "option+" formats
+        let examples = [
+            // Control key variations
+            ["control+c", "\x03"],
+            ["ctrl+c", "\x03"],
+            ["Control+C", "\x03"],
+            ["CTRL+C", "\x03"],
+            ["control+a", "\x01"],
+            ["ctrl+z", "\x1a"],
+            
+            // Special keys with modifiers
+            ["control+left", "\x1b[1;5D"],
+            ["ctrl+right", "\x1b[1;5C"],
+            ["shift+left", "\x1b[1;2D"],
+            ["shift+right", "\x1b[1;2C"],
+            ["alt+left", "\x1b[1;3D"],
+            ["option+left", "\x1b[1;3D"],
+            ["alt+up", "\x1b[1;3A"],
+            ["option+down", "\x1b[1;3B"],
+            
+            // Combined modifiers
+            ["control+shift+left", "\x1b[1;6D"],
+            ["ctrl+shift+right", "\x1b[1;6C"],
+            ["control+alt+left", "\x1b[1;7D"],
+            ["ctrl+alt+right", "\x1b[1;7C"],
+            ["alt+shift+left", "\x1b[1;4D"],
+            ["shift+alt+right", "\x1b[1;4C"],
+            
+            // Triple modifiers
+            ["control+alt+shift+left", "\x1b[1;8D"],
+            ["ctrl+alt+shift+right", "\x1b[1;8C"],
+            ["control+shift+alt+up", "\x1b[1;8A"],
+            ["shift+control+alt+down", "\x1b[1;8B"],
+            
+            // Special keys
+            ["control+space", "\x00"],
+            ["ctrl+Space", "\x00"],
+            ["shift+f1", "\x1b[1;2P"],
+            ["control+f5", "\x1b[15;5~"],
+            ["alt+f10", "\x1b[21;3~"],
+            
+            // Home/End/PageUp/PageDown
+            ["control+home", "\x1b[1;5H"],
+            ["shift+end", "\x1b[1;2F"],
+            ["alt+pageup", "\x1b[5;3~"],
+            ["control+pagedown", "\x1b[6;5~"],
+        ];
+        
+        for [key, expected] in examples {
+            let command = parse_line(&format!(
+                "{{ \"type\": \"sendKeys\", \"keys\": [\"{key}\"] }}"
+            ))
+            .unwrap();
+            
+            assert!(
+                matches!(command, Command::Input(input) if input == vec![standard_key(expected)]),
+                "Failed for key: {}, expected: {:?}", key, expected
+            );
+        }
     }
 
     #[test]

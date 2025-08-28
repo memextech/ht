@@ -190,6 +190,8 @@ terminal as if the keys were pressed on a keyboard.
 { "type": "sendKeys", "keys": ["nano", "Enter"] }
 { "type": "sendKeys", "keys": ["hello", "Enter", "world"] }
 { "type": "sendKeys", "keys": ["^x", "n"] }
+{ "type": "sendKeys", "keys": ["control+c"] }
+{ "type": "sendKeys", "keys": ["ctrl+shift+left", "Delete"] }
 ```
 
 Each element of the `keys` array can be either a key name or an arbitrary text.
@@ -222,8 +224,16 @@ Modifier keys are supported by prepending a key with one of the prefixes:
 - `S-` - shift - e.g. `S-F6` means <kbd>Shift</kbd> + <kbd>F6</kbd>
 - `A-` - alt/option - e.g. `A-Home` means <kbd>Alt</kbd> + <kbd>Home</kbd>
 
+Additionally, more verbose modifier formats are also supported:
+- `control+` or `ctrl+` - control - e.g. `control+c` or `ctrl+c` means <kbd>Ctrl</kbd> + <kbd>C</kbd>
+- `shift+` - shift - e.g. `shift+F6` means <kbd>Shift</kbd> + <kbd>F6</kbd>
+- `alt+` or `option+` - alt/option - e.g. `alt+Home` or `option+Home` means <kbd>Alt</kbd> + <kbd>Home</kbd>
+
+These formats are case-insensitive, so `Control+C`, `CONTROL+c`, and `ctrl+c` all work the same.
+
 Modifiers can be combined (for arrow keys only at the moment), so combinations
-such as `S-A-Up` or `C-S-Left` are possible.
+such as `S-A-Up` or `C-S-Left` are possible. The new formats also support combined
+modifiers like `control+shift+left` or `ctrl+alt+right`.
 
 `C-` control modifier notation can be used with ASCII letters (both lower and
 upper case are supported) and most special key names. The caret control notation
