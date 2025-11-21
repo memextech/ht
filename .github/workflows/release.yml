@@ -81,3 +81,4 @@ jobs:
           file: ${{ steps.binary.outputs.path }}
           asset_name: ${{ steps.binary.outputs.name }}
           tag: ${{ github.ref }}
+          overwrite: true
