@@ -27,36 +27,57 @@ jobs:
             target: aarch64-unknown-linux-gnu
             use-cross: true
 
-          - os: macos-latest
+          - os: macos-15
             target: x86_64-apple-darwin
             use-cross: false
 
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             use-cross: false
 
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use-cross: false
+
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-          target: ${{ matrix.target }}
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.use-cross == true
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ matrix.use-cross }}
-          command: build
-          args: --target ${{ matrix.target }} --release --locked
+        run: |
+          if [[ "${{ matrix.use-cross }}" == "true" ]]; then
+            cross build --target ${{ matrix.target }} --release --locked
+          else
+            cargo build --target ${{ matrix.target }} --release --locked
+          fi
+        shell: bash
+
+      - name: Set binary path
+        id: binary
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            echo "path=target/${{ matrix.target }}/release/ht.exe" >> $GITHUB_OUTPUT
+            echo "name=ht-${{ matrix.target }}.exe" >> $GITHUB_OUTPUT
+          else
+            echo "path=target/${{ matrix.target }}/release/ht" >> $GITHUB_OUTPUT
+            echo "name=ht-${{ matrix.target }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload binaries to the release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/${{ matrix.target }}/release/ht
-          asset_name: ht-${{ matrix.target }}
+          file: ${{ steps.binary.outputs.path }}
+          asset_name: ${{ steps.binary.outputs.name }}
           tag: ${{ github.ref }}
