@@ -2,7 +2,7 @@ use crate::api::Subscription;
 use crate::pty::Winsize;
 use anyhow::bail;
 use clap::Parser;
-use std::{fmt::Display, net::SocketAddr, ops::Deref, str::FromStr};
+use std::{fmt::Display, net::SocketAddr, ops::Deref, path::PathBuf, str::FromStr};
 
 #[derive(Debug, Parser)]
 #[clap(version, about)]
@@ -23,6 +23,10 @@ pub struct Cli {
     /// Subscribe to events
     #[arg(long, value_name = "EVENTS")]
     pub subscribe: Option<Subscription>,
+
+    /// Path to custom CSS file for styling overrides
+    #[arg(long, value_name = "PATH")]
+    pub custom_css: Option<PathBuf>,
 }
 
 impl Default for Cli {

@@ -1,0 +1,69 @@
+/**
+ * Tailwind Neutral Theme for ht
+ * Uses Tailwind CSS neutral color palette
+ * Primary background: neutral-950 (#0a0a0a)
+ */
+
+/* Override page background */
+body {
+  background-color: #0a0a0a !important; /* neutral-950 */
+  padding: 24px !important;
+}
+
+/* Override the dracula theme (or create new theme) */
+.asciinema-player-theme-dracula,
+.asciinema-player-theme-tailwind-neutral {
+  --term-color-foreground: #fafafa !important; /* neutral-50 */
+  --term-color-background: #0a0a0a !important; /* neutral-950 */
+  
+  /* ANSI Colors using Tailwind neutral palette with accent colors */
+  --term-color-0: #171717 !important;   /* neutral-900 - black */
+  --term-color-1: #ef4444 !important;   /* red-500 - red */
+  --term-color-2: #22c55e !important;   /* green-500 - green */
+  --term-color-3: #eab308 !important;   /* yellow-500 - yellow */
+  --term-color-4: #3b82f6 !important;   /* blue-500 - blue */
+  --term-color-5: #a855f7 !important;   /* purple-500 - magenta */
+  --term-color-6: #06b6d4 !important;   /* cyan-500 - cyan */
+  --term-color-7: #d4d4d4 !important;   /* neutral-300 - white */
+  
+  /* Bright ANSI Colors */
+  --term-color-8: #525252 !important;   /* neutral-600 - bright black */
+  --term-color-9: #f87171 !important;   /* red-400 - bright red */
+  --term-color-10: #4ade80 !important;  /* green-400 - bright green */
+  --term-color-11: #facc15 !important;  /* yellow-400 - bright yellow */
+  --term-color-12: #60a5fa !important;  /* blue-400 - bright blue */
+  --term-color-13: #c084fc !important;  /* purple-400 - bright magenta */
+  --term-color-14: #22d3ee !important;  /* cyan-400 - bright cyan */
+  --term-color-15: #fafafa !important;  /* neutral-50 - bright white */
+}
+
+/* Apply the theme to the player */
+.ap-player {
+  box-shadow: 0 0 0 1px #262626, 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5) !important; /* neutral-800 border + shadow */
+  border-radius: 8px !important;
+}
+
+/* Override terminal styling */
+pre.ap-terminal {
+  background-color: #0a0a0a !important; /* neutral-950 */
+  border-color: #0a0a0a !important;
+  color: #fafafa !important; /* neutral-50 */
+}
+
+/* Control bar styling (if enabled) */
+div.ap-control-bar {
+  border-top: 2px solid #262626 !important; /* neutral-800 */
+  background: linear-gradient(to bottom, rgba(10, 10, 10, 0.95), rgba(10, 10, 10, 0.98)) !important;
+}
+
+/* Cursor styling */
+pre.ap-terminal.ap-cursor-on .ap-line .ap-cursor {
+  background-color: #a3a3a3 !important; /* neutral-400 */
+  color: #0a0a0a !important;
+}
+
+/* Selection styling */
+pre.ap-terminal ::selection {
+  background-color: #404040; /* neutral-700 */
+  color: #fafafa; /* neutral-50 */
+}

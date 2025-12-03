@@ -16,6 +16,8 @@ use std::borrow::Cow;
 use std::future::{self, Future, IntoFuture};
 use std::io;
 use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -23,9 +25,19 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 #[folder = "assets/"]
 struct Assets;
 
+/// Shared state across HTTP handlers
+#[derive(Clone)]
+struct AppState {
+    /// Channel for sending WebSocket clients to the session
+    clients_tx: mpsc::Sender<session::Client>,
+    /// Optional path to custom CSS file for styling overrides
+    custom_css: Option<Arc<PathBuf>>,
+}
+
 pub async fn start(
     listener: TcpListener,
     clients_tx: mpsc::Sender<session::Client>,
+    custom_css: Option<PathBuf>,
 ) -> Result<impl Future<Output = io::Result<()>>> {
     listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(listener)?;
@@ -33,11 +45,20 @@ pub async fn start(
     eprintln!("HTTP server listening on {addr}");
     eprintln!("live preview available at http://{addr}");
 
-    let app: Router<()> = Router::new()
+    if let Some(ref css_path) = custom_css {
+        eprintln!("custom CSS enabled: {}", css_path.display());
+    }
+
+    let state = AppState {
+        clients_tx,
+        custom_css: custom_css.map(Arc::new),
+    };
+
+    let app = Router::new()
         .route("/ws/alis", get(alis_handler))
         .route("/ws/events", get(event_stream_handler))
-        .with_state(clients_tx)
-        .fallback(static_handler);
+        .fallback(static_handler)
+        .with_state(state);
 
     Ok(axum::serve(
         listener,
@@ -53,10 +74,10 @@ pub async fn start(
 async fn alis_handler(
     ws: ws::WebSocketUpgrade,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    State(clients_tx): State<mpsc::Sender<session::Client>>,
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        let _ = handle_alis_socket(socket, clients_tx).await;
+        let _ = handle_alis_socket(socket, state.clients_tx).await;
     })
 }
 
@@ -121,12 +142,12 @@ async fn event_stream_handler(
     ws: ws::WebSocketUpgrade,
     Query(params): Query<EventsParams>,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    State(clients_tx): State<mpsc::Sender<session::Client>>,
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     let sub: Subscription = params.sub.unwrap_or_default().parse().unwrap_or_default();
 
     ws.on_upgrade(move |socket| async move {
-        let _ = handle_event_stream_socket(socket, clients_tx, sub).await;
+        let _ = handle_event_stream_socket(socket, state.clients_tx, sub).await;
     })
 }
 
@@ -178,20 +199,41 @@ fn close_message() -> ws::Message {
     }))
 }
 
-async fn static_handler(uri: Uri) -> impl IntoResponse {
+/// Serve static assets (embedded or custom CSS from filesystem)
+async fn static_handler(uri: Uri, State(state): State<AppState>) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
 
     if path.is_empty() {
         path = "index.html";
     }
 
+    // Handle custom CSS request - loaded from filesystem at runtime
+    if path == "custom.css" {
+        return match &state.custom_css {
+            Some(css_path) => {
+                match tokio::fs::read(css_path.as_ref()).await {
+                    Ok(content) => {
+                        ([(header::CONTENT_TYPE, "text/css")], content).into_response()
+                    }
+                    Err(e) => {
+                        eprintln!("failed to read custom CSS file '{}': {}", css_path.display(), e);
+                        (StatusCode::NOT_FOUND, "").into_response()
+                    }
+                }
+            }
+            None => {
+                // No custom CSS configured - return 404 silently (browser will ignore)
+                (StatusCode::NOT_FOUND, "").into_response()
+            }
+        };
+    }
+
+    // Serve embedded assets
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-
             ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
-
-        None => (StatusCode::NOT_FOUND, "404").into_response(),
+        None => (StatusCode::NOT_FOUND, "").into_response(),
     }
 }

@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     let (command_tx, command_rx) = mpsc::channel(1024);
     let (clients_tx, clients_rx) = mpsc::channel(1);
 
-    start_http_api(cli.listen, clients_tx.clone()).await?;
+    start_http_api(cli.listen, clients_tx.clone(), cli.custom_css).await?;
     let api = start_stdio_api(command_tx, clients_tx, cli.subscribe.unwrap_or_default());
     let pty = start_pty(cli.command, &cli.size, input_rx, output_tx)?;
     let session = build_session(&cli.size);
@@ -59,10 +59,11 @@ fn start_pty(
 async fn start_http_api(
     listen_addr: Option<SocketAddr>,
     clients_tx: mpsc::Sender<session::Client>,
+    custom_css: Option<std::path::PathBuf>,
 ) -> Result<()> {
     if let Some(addr) = listen_addr {
         let listener = TcpListener::bind(addr).context("cannot start HTTP listener")?;
-        tokio::spawn(api::http::start(listener, clients_tx).await?);
+        tokio::spawn(api::http::start(listener, clients_tx, custom_css).await?);
     }
 
     Ok(())

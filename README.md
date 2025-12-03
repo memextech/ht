@@ -78,6 +78,20 @@ By default it listens on `127.0.0.1` and a system assigned, dynamic port. If you
 need it to bind to another interface, or a specific port, pass the address to
 the `-l` option, e.g. `-l 0.0.0.0:9999`.
 
+### Custom styling
+
+The terminal preview can be customized with CSS using the `--custom-css` option:
+
+```bash
+ht --listen 127.0.0.1:8080 --custom-css path/to/theme.css
+```
+
+Custom CSS is loaded after the default styles, allowing you to override colors,
+fonts, spacing, and other visual properties. Changes to the CSS file take effect
+on browser refresh without recompiling.
+
+See `examples/embedding/` for a complete example theme and integration guide.
+
 ## API
 
 ht provides 2 types of API: STDIO and WebSocket.
