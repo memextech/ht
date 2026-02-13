@@ -38,12 +38,15 @@ mod unix {
 
         let prompt_marker = "TEST_PROMPT> ";
         let mut found = false;
+        let mut raw_chunks: Vec<String> = Vec::new();
+        let mut exit_reason = "deadline expired";
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
 
         while tokio::time::Instant::now() < deadline {
             match timeout(Duration::from_millis(100), output_rx.recv()).await {
                 Ok(Some(data)) => {
                     let text = String::from_utf8_lossy(&data);
+                    raw_chunks.push(text.to_string());
                     vt.feed_str(&text);
 
                     if screen_text(&vt).contains(prompt_marker) {
@@ -51,12 +54,24 @@ mod unix {
                         break;
                     }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    exit_reason = "channel closed (PTY exited)";
+                    break;
+                }
                 Err(_) => continue,
             }
         }
 
-        assert!(found, "Expected prompt '{}' on screen", prompt_marker);
+        let screen = screen_text(&vt);
+        assert!(
+            found,
+            "Prompt '{}' not found.\nExit reason: {}\nScreen contents:\n{}\nRaw output chunks ({}):\n{}",
+            prompt_marker,
+            exit_reason,
+            screen,
+            raw_chunks.len(),
+            raw_chunks.join("---\n"),
+        );
 
         let _ = input_tx.send(b"exit\n".to_vec()).await;
         drop(input_tx);
@@ -107,12 +122,15 @@ mod windows {
 
         let prompt_marker = "TEST_PROMPT> ";
         let mut found = false;
+        let mut raw_chunks: Vec<String> = Vec::new();
+        let mut exit_reason = "deadline expired";
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
 
         while tokio::time::Instant::now() < deadline {
             match timeout(Duration::from_millis(100), output_rx.recv()).await {
                 Ok(Some(data)) => {
                     let text = String::from_utf8_lossy(&data);
+                    raw_chunks.push(text.to_string());
                     vt.feed_str(&text);
 
                     if screen_text(&vt).contains(prompt_marker) {
@@ -120,12 +138,24 @@ mod windows {
                         break;
                     }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    exit_reason = "channel closed (PTY exited)";
+                    break;
+                }
                 Err(_) => continue,
             }
         }
 
-        assert!(found, "Expected prompt '{}' on screen", prompt_marker);
+        let screen = screen_text(&vt);
+        assert!(
+            found,
+            "Prompt '{}' not found.\nExit reason: {}\nScreen contents:\n{}\nRaw output chunks ({}):\n{}",
+            prompt_marker,
+            exit_reason,
+            screen,
+            raw_chunks.len(),
+            raw_chunks.join("---\n"),
+        );
 
         let _ = input_tx.send(b"exit\n".to_vec()).await;
         drop(input_tx);
