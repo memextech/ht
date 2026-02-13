@@ -103,81 +103,76 @@ jobs:
     - name: Build release
       run: cargo build --release --verbose
     
-    - name: Verify Windows binary exists
+    - name: Find Windows binary
+      id: find_binary
       shell: powershell
       run: |
         Write-Host "Checking for Windows binary..."
         Write-Host "Current directory: $(Get-Location)"
-        
-        # Check target directory structure
-        Write-Host "Target directory contents:"
-        if (Test-Path "target") {
-          Get-ChildItem "target" -Name
-          Write-Host "Target\release directory contents:"
-          if (Test-Path "target\release") {
-            Get-ChildItem "target\release" | Format-Table Name, Length
-          } else {
-            Write-Host "target\release directory does not exist"
-          }
-        } else {
-          Write-Host "target directory does not exist"
-        }
-        
-        # Check for various possible binary names
+
         $possibleBinaries = @(
           "target\release\ht.exe",
-          "target\release\ht-core.exe", 
+          "target\release\ht-core.exe",
           "target\x86_64-pc-windows-msvc\release\ht.exe",
           "target\x86_64-pc-windows-msvc\release\ht-core.exe"
         )
-        
+
         $foundBinary = $null
-        foreach ($binaryPath in $possibleBinaries) {
-          if (Test-Path $binaryPath) {
-            $binary = Get-Item $binaryPath
-            Write-Host "Found binary at: $binaryPath ($($binary.Length) bytes)"
-            $foundBinary = $binaryPath
+        foreach ($path in $possibleBinaries) {
+          if (Test-Path $path) {
+            $binary = Get-Item $path
+            Write-Host "Found binary at: $path ($($binary.Length) bytes)"
+            $foundBinary = $path
             break
           }
         }
-        
+
         if (-not $foundBinary) {
           Write-Host "No binary found at any expected location"
+          Write-Host "Target directory contents:"
+          if (Test-Path "target\release") {
+            Get-ChildItem "target\release" | Format-Table Name, Length
+          }
           exit 1
         }
-    
+
+        "HT_BINARY_PATH=$foundBinary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "binary_path=$foundBinary" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    - name: Verify binary size
+      shell: powershell
+      run: |
+        $size = (Get-Item $env:HT_BINARY_PATH).Length
+        Write-Host "Binary size: $([math]::Round($size / 1MB, 2)) MB"
+        if ($size -gt 50MB) {
+          Write-Error "Binary size too large: $([math]::Round($size / 1MB, 2)) MB (limit: 50 MB)"
+          exit 1
+        }
+
+    - name: Validate PowerShell script syntax
+      shell: powershell
+      run: |
+        Write-Host "Validating PowerShell script syntax..."
+        $errors = $null
+        [System.Management.Automation.PSParser]::Tokenize((Get-Content "scripts\test-windows.ps1" -Raw), [ref]$errors)
+        if ($errors) {
+          Write-Error "PowerShell syntax errors found:"
+          $errors | ForEach-Object { Write-Error $_ }
+          exit 1
+        }
+        Write-Host "PowerShell script syntax is valid"
+
     - name: Run Windows-specific tests
       shell: powershell
       run: |
-        # Find the binary first
-        $binaryPath = $null
-        $possibleBinaries = @(
-          "target\release\ht.exe",
-          "target\release\ht-core.exe", 
-          "target\x86_64-pc-windows-msvc\release\ht.exe",
-          "target\x86_64-pc-windows-msvc\release\ht-core.exe"
-        )
-        
-        foreach ($path in $possibleBinaries) {
-          if (Test-Path $path) {
-            $binaryPath = $path
-            break
-          }
-        }
-        
-        if (-not $binaryPath) {
-          Write-Host "No binary found for testing"
-          exit 1
-        }
-        
-        Write-Host "Using binary: $binaryPath"
-        .\scripts\test-windows.ps1 -BinaryPath $binaryPath
-    
+        Write-Host "Using binary: $env:HT_BINARY_PATH"
+        .\scripts\test-windows.ps1 -BinaryPath $env:HT_BINARY_PATH
+
     - name: Upload Windows binary
       uses: actions/upload-artifact@v4
       with:
         name: ht-windows-x86_64
-        path: target/release/ht.exe
+        path: ${{ steps.find_binary.outputs.binary_path }}
 
   # Summary job to check all platforms passed
   cross-platform-summary:
