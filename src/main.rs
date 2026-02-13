@@ -26,7 +26,10 @@ async fn main() -> Result<()> {
     let api = start_stdio_api(command_tx, clients_tx, cli.subscribe.unwrap_or_default());
     let pty = start_pty(cli.command, &cli.size, input_rx, output_tx, resize_rx)?;
     let session = build_session(&cli.size);
-    run_event_loop(output_rx, input_tx, command_rx, clients_rx, session, api, resize_tx).await?;
+    run_event_loop(
+        output_rx, input_tx, command_rx, clients_rx, session, api, resize_tx,
+    )
+    .await?;
     pty.await?
 }
 

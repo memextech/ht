@@ -1,15 +1,14 @@
+use ht_core::pty;
+use nix::pty::Winsize;
 /// Unit tests for PTY write buffer handling
 ///
 /// These tests focus specifically on the write buffer management in pty.rs
 /// to understand and reproduce the buffer overflow issue at a lower level.
-
 use std::time::Duration;
 use tokio::sync::mpsc;
-use nix::pty::Winsize;
-use ht_core::pty;
 
 /// Test that demonstrates the PTY write buffer behavior
-/// 
+///
 /// The PTY master has a finite kernel buffer (typically 4KB on Unix systems).
 /// When we write more data than the buffer can hold, writes will:
 /// 1. Return EAGAIN/EWOULDBLOCK on non-blocking writes
@@ -41,11 +40,17 @@ async fn test_pty_write_buffer_limits() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut received = String::new();
-    while let Ok(Some(data)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+    while let Ok(Some(data)) =
+        tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+    {
         received.push_str(&String::from_utf8_lossy(&data));
     }
 
-    println!("Sent: {} bytes, Received: {} bytes", small_data.len(), received.len());
+    println!(
+        "Sent: {} bytes, Received: {} bytes",
+        small_data.len(),
+        received.len()
+    );
     assert!(
         received.contains("AAA"),
         "Small write should be echoed back correctly"
@@ -54,20 +59,32 @@ async fn test_pty_write_buffer_limits() {
     // Test 2: Send data approaching PTY buffer size (~4KB)
     println!("\n=== Test 2: Medium write (3000 bytes) ===");
     let medium_data = "B".repeat(3000);
-    input_tx.send(medium_data.as_bytes().to_vec()).await.unwrap();
+    input_tx
+        .send(medium_data.as_bytes().to_vec())
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     received.clear();
-    while let Ok(Some(data)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+    while let Ok(Some(data)) =
+        tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+    {
         received.push_str(&String::from_utf8_lossy(&data));
     }
 
     let b_count = received.matches('B').count();
-    println!("Sent: {} bytes, Received: {} 'B' chars", medium_data.len(), b_count);
+    println!(
+        "Sent: {} bytes, Received: {} 'B' chars",
+        medium_data.len(),
+        b_count
+    );
 
     if b_count < 3000 {
-        println!("WARNING: Buffer overflow detected! Lost {} bytes", 3000 - b_count);
+        println!(
+            "WARNING: Buffer overflow detected! Lost {} bytes",
+            3000 - b_count
+        );
     }
 
     // Test 3: Send data exceeding PTY buffer size (will likely fail)
@@ -78,12 +95,18 @@ async fn test_pty_write_buffer_limits() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     received.clear();
-    while let Ok(Some(data)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+    while let Ok(Some(data)) =
+        tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+    {
         received.push_str(&String::from_utf8_lossy(&data));
     }
 
     let c_count = received.matches('C').count();
-    println!("Sent: {} bytes, Received: {} 'C' chars", large_data.len(), c_count);
+    println!(
+        "Sent: {} bytes, Received: {} 'C' chars",
+        large_data.len(),
+        c_count
+    );
 
     // This will likely show data loss
     if c_count < 8000 {
@@ -93,7 +116,7 @@ async fn test_pty_write_buffer_limits() {
 
     // Cleanup
     let _ = input_tx.send(b"\x04".to_vec()).await; // Send EOF (Ctrl-D)
-    
+
     // Give PTY time to finish
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
@@ -143,7 +166,9 @@ async fn test_chunked_vs_bulk_write() {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let mut received = String::new();
-        while let Ok(Some(output)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+        while let Ok(Some(output)) =
+            tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+        {
             received.push_str(&String::from_utf8_lossy(&output));
         }
 
@@ -160,15 +185,30 @@ async fn test_chunked_vs_bulk_write() {
 
     println!("\n--- Bulk write ({}bytes) ---", data_size);
     let bulk_received = test_write_strategy(data_size, None).await;
-    println!("Bulk write: Sent {} bytes, Received {} bytes", data_size, bulk_received);
+    println!(
+        "Bulk write: Sent {} bytes, Received {} bytes",
+        data_size, bulk_received
+    );
 
-    println!("\n--- Chunked write ({}bytes in 256-byte chunks) ---", data_size);
+    println!(
+        "\n--- Chunked write ({}bytes in 256-byte chunks) ---",
+        data_size
+    );
     let chunked_received = test_write_strategy(data_size, Some(256)).await;
-    println!("Chunked write: Sent {} bytes, Received {} bytes", data_size, chunked_received);
+    println!(
+        "Chunked write: Sent {} bytes, Received {} bytes",
+        data_size, chunked_received
+    );
 
     println!("\n--- Results ---");
-    println!("Bulk write efficiency: {:.1}%", (bulk_received as f64 / data_size as f64) * 100.0);
-    println!("Chunked write efficiency: {:.1}%", (chunked_received as f64 / data_size as f64) * 100.0);
+    println!(
+        "Bulk write efficiency: {:.1}%",
+        (bulk_received as f64 / data_size as f64) * 100.0
+    );
+    println!(
+        "Chunked write efficiency: {:.1}%",
+        (chunked_received as f64 / data_size as f64) * 100.0
+    );
 
     // Chunked writes should be more reliable
     assert!(
@@ -224,7 +264,9 @@ async fn test_rapid_consecutive_writes() {
 
     // Collect output
     let mut received = String::new();
-    while let Ok(Some(data)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+    while let Ok(Some(data)) =
+        tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+    {
         received.push_str(&String::from_utf8_lossy(&data));
     }
 
@@ -296,7 +338,9 @@ async fn test_optimal_chunk_delay() {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let mut received = String::new();
-        while let Ok(Some(output)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+        while let Ok(Some(output)) =
+            tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+        {
             received.push_str(&String::from_utf8_lossy(&output));
         }
 
@@ -351,7 +395,9 @@ async fn test_find_actual_buffer_size() {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let mut received = String::new();
-        while let Ok(Some(output)) = tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await {
+        while let Ok(Some(output)) =
+            tokio::time::timeout(Duration::from_millis(50), output_rx.recv()).await
+        {
             received.push_str(&String::from_utf8_lossy(&output));
         }
 

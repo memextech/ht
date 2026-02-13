@@ -37,24 +37,24 @@ use std::mem::{size_of, zeroed};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
-use windows::core::PWSTR;
-#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 #[cfg(windows)]
 use windows::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
+    COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
 };
 #[cfg(windows)]
 use windows::Win32::System::Pipes::CreatePipe;
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+    CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
     TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
-    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW, STARTUPINFOW,
 };
+#[cfg(windows)]
+use windows::core::PWSTR;
 
 // Common winsize structure that works across platforms
 #[cfg(unix)]
@@ -251,9 +251,8 @@ impl Drop for ConPty {
         // 5. DeleteProcThreadAttributeList:
         if !self.attr_list_buf.is_empty() {
             unsafe {
-                let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(
-                    self.attr_list_buf.as_mut_ptr() as *mut c_void,
-                );
+                let attr_list =
+                    LPPROC_THREAD_ATTRIBUTE_LIST(self.attr_list_buf.as_mut_ptr() as *mut c_void);
                 DeleteProcThreadAttributeList(attr_list);
             }
         }
@@ -308,8 +307,7 @@ impl ConPty {
     fn new(winsize: Winsize, command: &str) -> Result<Self> {
         unsafe {
             // 1. Create pipe pairs — wrap each end immediately
-            let (mut input_read_raw, mut input_write_raw) =
-                (HANDLE::default(), HANDLE::default());
+            let (mut input_read_raw, mut input_write_raw) = (HANDLE::default(), HANDLE::default());
             let (mut output_read_raw, mut output_write_raw) =
                 (HANDLE::default(), HANDLE::default());
             CreatePipe(&mut input_read_raw, &mut input_write_raw, None, 0)?;
@@ -349,9 +347,8 @@ impl ConPty {
             let mut attr_list_size: usize = 0;
             let _ = InitializeProcThreadAttributeList(None, 1, None, &mut attr_list_size);
             conpty.attr_list_buf = vec![0u8; attr_list_size];
-            let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(
-                conpty.attr_list_buf.as_mut_ptr() as *mut c_void,
-            );
+            let attr_list =
+                LPPROC_THREAD_ATTRIBUTE_LIST(conpty.attr_list_buf.as_mut_ptr() as *mut c_void);
             InitializeProcThreadAttributeList(Some(attr_list), 1, None, &mut attr_list_size)?;
 
             // 5. Wire hpc into the attribute list
@@ -376,8 +373,10 @@ impl ConPty {
             } else {
                 format!("cmd.exe /c {}", escape_arg(command))
             };
-            let mut cmd_wide: Vec<u16> =
-                cmd_str.encode_utf16().chain(std::iter::once(0u16)).collect();
+            let mut cmd_wide: Vec<u16> = cmd_str
+                .encode_utf16()
+                .chain(std::iter::once(0u16))
+                .collect();
             let cmd_pwstr = PWSTR(cmd_wide.as_mut_ptr());
 
             let mut proc_info: PROCESS_INFORMATION = zeroed();
@@ -396,8 +395,7 @@ impl ConPty {
             )?;
 
             // 8. Extract process/thread handles from PROCESS_INFORMATION
-            conpty.proc_handle =
-                Some(OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _));
+            conpty.proc_handle = Some(OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _));
             conpty.thread_handle =
                 Some(OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _));
 
@@ -434,12 +432,7 @@ impl ConPty {
                         while offset < data.len() {
                             let mut written: u32 = 0;
                             let ok = unsafe {
-                                WriteFile(
-                                    raw,
-                                    Some(&data[offset..]),
-                                    Some(&mut written),
-                                    None,
-                                )
+                                WriteFile(raw, Some(&data[offset..]), Some(&mut written), None)
                             };
                             if ok.is_err() {
                                 // WriteFile failed — return ownership for cleanup
@@ -464,14 +457,7 @@ impl ConPty {
             let mut buf = vec![0u8; READ_BUF_SIZE];
             loop {
                 let mut bytes_read: u32 = 0;
-                let ok = unsafe {
-                    ReadFile(
-                        raw,
-                        Some(&mut buf),
-                        Some(&mut bytes_read),
-                        None,
-                    )
-                };
+                let ok = unsafe { ReadFile(raw, Some(&mut buf), Some(&mut bytes_read), None) };
                 if ok.is_err() || bytes_read == 0 {
                     break;
                 }
@@ -498,16 +484,18 @@ impl ConPty {
         );
 
         // Spawn a task to wait for child process exit
-        let mut wait_handle = tokio::task::spawn_blocking(move || {
-            unsafe {
-                WaitForSingleObject(proc_raw, u32::MAX);
-            }
+        let mut wait_handle = tokio::task::spawn_blocking(move || unsafe {
+            WaitForSingleObject(proc_raw, u32::MAX);
         });
 
         // Wait for any of the three events.
         // Use &mut references to preserve JoinHandles for cleanup.
         #[derive(PartialEq)]
-        enum Finished { Write, Read, Wait }
+        enum Finished {
+            Write,
+            Read,
+            Wait,
+        }
         let finished = tokio::select! {
             result = &mut write_handle => {
                 // Write thread finished (channel closed or WriteFile failed)
@@ -562,9 +550,15 @@ impl ConPty {
         // 4. All blocking threads should now be done (ClosePseudoConsole broke
         //    the pipe and the child has exited). Await remaining JoinHandles to
         //    ensure no thread still holds a raw handle copy before we drop self.
-        if finished != Finished::Write { let _ = write_handle.await; }
-        if finished != Finished::Read { let _ = read_handle.await; }
-        if finished != Finished::Wait { let _ = wait_handle.await; }
+        if finished != Finished::Write {
+            let _ = write_handle.await;
+        }
+        if finished != Finished::Read {
+            let _ = read_handle.await;
+        }
+        if finished != Finished::Wait {
+            let _ = wait_handle.await;
+        }
 
         // 5. Drop self — closes proc_handle/thread_handle,
         //    calls DeleteProcThreadAttributeList.

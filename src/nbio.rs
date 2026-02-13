@@ -6,7 +6,7 @@ use std::os::fd::RawFd;
 
 #[cfg(unix)]
 pub fn set_non_blocking(fd: &RawFd) -> Result<(), io::Error> {
-    use nix::fcntl::{fcntl, FcntlArg::*, OFlag};
+    use nix::fcntl::{FcntlArg::*, OFlag, fcntl};
 
     let flags = fcntl(*fd, F_GETFL)?;
     let mut oflags = OFlag::from_bits_truncate(flags);

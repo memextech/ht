@@ -1,13 +1,13 @@
 /// Tests for PTY buffer overflow issues when sending large heredocs
-/// 
+///
 /// This test suite reproduces the issue documented in:
 /// - HEREDOC_INVESTIGATION_SUMMARY.md
 /// - HEREDOC_ROOT_CAUSE_CONFIRMED.md
-/// 
+///
 /// ## Issue Summary
 /// When sending large heredocs (>~1500 characters) through the PTY interface,
 /// text gets scrambled and corrupted due to PTY write buffer overflow.
-/// 
+///
 /// ## Root Cause
 /// The PTY master has a limited kernel buffer (typically 4096 bytes on Linux/macOS).
 /// When we write data faster than the shell can read it, the buffer fills up and
@@ -18,7 +18,6 @@
 /// 1. Send increasingly large heredoc commands through the PTY
 /// 2. Verify that output is received in the correct order
 /// 3. Demonstrate failure when size exceeds PTY buffer capacity
-
 use ht_core::command::{Command, InputSeq};
 use ht_core::pty;
 use nix::pty::Winsize;
@@ -343,7 +342,7 @@ async fn run_command_with_pty(command: String) -> Result<String, String> {
     let pty_future = pty::spawn(shell_command, winsize, input_rx, output_tx, resize_rx)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
-    // Spawn PTY driver  
+    // Spawn PTY driver
     let pty_handle = tokio::spawn(pty_future);
 
     // Send command

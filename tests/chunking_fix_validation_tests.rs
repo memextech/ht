@@ -2,7 +2,6 @@
 ///
 /// These tests verify that the chunking implementation in src/api/stdio.rs
 /// properly handles large inputs without data loss.
-
 use ht_core::command::{Command, InputSeq};
 
 /// Test that verifies chunking threshold detection
@@ -13,19 +12,20 @@ fn test_chunking_threshold_logic() {
     const CHUNK_SIZE: usize = 512;
 
     let test_cases = vec![
-        (100, false, 1),    // Small, no chunking
-        (500, false, 1),    // Medium, no chunking
-        (1000, false, 1),   // Still safe, no chunking
-        (1499, false, 1),   // Just below threshold, no chunking
-        (1500, true, 3),    // At threshold, chunk into 3 pieces
-        (2000, true, 4),    // Above threshold, chunk into 4 pieces
-        (5000, true, 10),   // Large, chunk into 10 pieces
+        (100, false, 1),  // Small, no chunking
+        (500, false, 1),  // Medium, no chunking
+        (1000, false, 1), // Still safe, no chunking
+        (1499, false, 1), // Just below threshold, no chunking
+        (1500, true, 3),  // At threshold, chunk into 3 pieces
+        (2000, true, 4),  // Above threshold, chunk into 4 pieces
+        (5000, true, 10), // Large, chunk into 10 pieces
     ];
 
     for (size, should_chunk, expected_chunks) in test_cases {
         let needs_chunking = size >= CHUNK_THRESHOLD;
         assert_eq!(
-            needs_chunking, should_chunk,
+            needs_chunking,
+            should_chunk,
             "Size {} should {}be chunked",
             size,
             if should_chunk { "" } else { "NOT " }
@@ -88,7 +88,10 @@ fn test_chunking_preserves_data() {
         test_data.len(),
         "Reassembled data should match original length"
     );
-    assert_eq!(reassembled, test_data, "Reassembled data should match original");
+    assert_eq!(
+        reassembled, test_data,
+        "Reassembled data should match original"
+    );
 }
 
 /// Test chunking with various data types

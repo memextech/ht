@@ -2,7 +2,6 @@
 ///
 /// This test validates that the chunking implementation actually prevents
 /// buffer overflow when sending large commands through HT.
-
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -20,10 +19,7 @@ fn test_large_heredoc_with_chunking_fix() {
         .expect("Failed to build HT");
 
     if !build.status.success() {
-        panic!(
-            "Build failed:\n{}",
-            String::from_utf8_lossy(&build.stderr)
-        );
+        panic!("Build failed:\n{}", String::from_utf8_lossy(&build.stderr));
     }
 
     println!("✓ Build successful\n");
@@ -111,9 +107,7 @@ EOF
     drop(stdin);
 
     // Wait for output with timeout
-    let output = child
-        .wait_with_output()
-        .expect("Failed to wait for output");
+    let output = child.wait_with_output().expect("Failed to wait for output");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -215,8 +209,10 @@ EOF
 
     if input_json.len() >= 1500 {
         println!("✓ Large enough to trigger chunking fix");
-        println!("  Without chunking: Would lose ~{}% of data", 
-                 ((input_json.len() - 4096) * 100 / input_json.len()));
+        println!(
+            "  Without chunking: Would lose ~{}% of data",
+            ((input_json.len() - 4096) * 100 / input_json.len())
+        );
         println!("  With chunking: Should work perfectly");
     }
 
