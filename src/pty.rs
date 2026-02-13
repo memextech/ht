@@ -31,11 +31,30 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use tokio::io::unix::AsyncFd;
 
 #[cfg(windows)]
-use std::process::Stdio;
+use std::ffi::c_void;
 #[cfg(windows)]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::mem::{size_of, zeroed};
 #[cfg(windows)]
-use tokio::process::Command;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
+use windows::core::PWSTR;
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+#[cfg(windows)]
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+#[cfg(windows)]
+use windows::Win32::System::Console::{
+    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
+};
+#[cfg(windows)]
+use windows::Win32::System::Pipes::CreatePipe;
+#[cfg(windows)]
+use windows::Win32::System::Threading::{
+    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW, STARTUPINFOW,
+};
 
 // Common winsize structure that works across platforms
 #[cfg(unix)]
@@ -55,6 +74,7 @@ pub fn spawn(
     winsize: Winsize,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
+    _resize_rx: mpsc::Receiver<(u16, u16)>,
 ) -> Result<impl Future<Output = Result<()>>> {
     let result = unsafe { pty::forkpty(Some(&winsize), None) }?;
 
@@ -191,143 +211,391 @@ fn exec(command: String) -> io::Result<()> {
 
 // Windows implementation
 #[cfg(windows)]
-pub fn spawn(
-    command: String,
-    _winsize: Winsize,
-    input_rx: mpsc::Receiver<Vec<u8>>,
-    output_tx: mpsc::Sender<Vec<u8>>,
-) -> Result<impl Future<Output = Result<()>>> {
-    // Parse command for Windows cmd.exe
-    let cmd_args = if command.is_empty() {
-        vec!["cmd.exe".to_string()]
-    } else {
-        vec!["cmd.exe".to_string(), "/c".to_string(), command]
-    };
+const READ_BUF_SIZE: usize = 128 * 1024;
 
-    // Spawn the process using tokio::process
-    let mut child = Command::new(&cmd_args[0])
-        .args(&cmd_args[1..])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn child process: {}", e))?;
-
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get child stdin"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get child stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get child stderr"))?;
-
-    Ok(drive_child_windows(
-        child, stdin, stdout, stderr, input_rx, output_tx,
-    ))
+#[cfg(windows)]
+struct ConPty {
+    hpc: HPCON,
+    input_write: Option<OwnedHandle>,
+    output_read: Option<OwnedHandle>,
+    proc_handle: Option<OwnedHandle>,
+    thread_handle: Option<OwnedHandle>,
+    attr_list_buf: Vec<u8>,
 }
 
 #[cfg(windows)]
-async fn drive_child_windows(
-    mut child: tokio::process::Child,
-    mut stdin: tokio::process::ChildStdin,
-    stdout: tokio::process::ChildStdout,
-    stderr: tokio::process::ChildStderr,
-    mut input_rx: mpsc::Receiver<Vec<u8>>,
-    output_tx: mpsc::Sender<Vec<u8>>,
-) -> Result<()> {
-    let mut stdout_reader = BufReader::new(stdout);
-    let mut stderr_reader = BufReader::new(stderr);
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
+impl Drop for ConPty {
+    fn drop(&mut self) {
+        // 1. Close input_write if still held (not yet taken by write thread).
+        drop(self.input_write.take());
 
-    loop {
-        tokio::select! {
-            // Handle input from the application
-            result = input_rx.recv() => {
-                match result {
-                    Some(data) => {
-                        if let Err(e) = stdin.write_all(&data).await {
-                            eprintln!("Failed to write to child stdin: {}", e);
-                            break;
-                        }
-                        if let Err(e) = stdin.flush().await {
-                            eprintln!("Failed to flush child stdin: {}", e);
-                            break;
-                        }
-                    }
-                    None => {
-                        // Input channel closed
-                        break;
-                    }
-                }
+        // 2. ClosePseudoConsole — only if drive() didn't already do it.
+        //    drive() zeroes hpc after calling ClosePseudoConsole in spawn_blocking.
+        //    In the abort path (Drop called without drive() completing),
+        //    we must call it here.
+        if self.hpc.0 != 0 {
+            unsafe {
+                ClosePseudoConsole(self.hpc);
             }
+        }
 
-            // Handle stdout output
-            result = stdout_reader.read_until(b'\n', &mut stdout_buf) => {
-                match result {
-                    Ok(0) => {
-                        // EOF on stdout
-                        break;
-                    }
-                    Ok(_) => {
-                        if output_tx.send(stdout_buf.clone()).await.is_err() {
-                            // Output channel closed
-                            break;
-                        }
-                        stdout_buf.clear();
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to read from child stdout: {}", e);
-                        break;
-                    }
-                }
-            }
+        // 3. Close output_read if still held (not yet taken by read thread).
+        //    In the normal path, drive() moves output_read into the read thread.
+        //    In the abort path, this closes it here.
+        drop(self.output_read.take());
 
-            // Handle stderr output
-            result = stderr_reader.read_until(b'\n', &mut stderr_buf) => {
-                match result {
-                    Ok(0) => {
-                        // EOF on stderr - continue since stdout might still be active
-                    }
-                    Ok(_) => {
-                        if output_tx.send(stderr_buf.clone()).await.is_err() {
-                            // Output channel closed
-                            break;
-                        }
-                        stderr_buf.clear();
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to read from child stderr: {}", e);
-                        // Continue even if stderr fails
-                    }
-                }
-            }
+        // 4. proc_handle, thread_handle (OwnedHandle) dropped automatically.
+        drop(self.proc_handle.take());
+        drop(self.thread_handle.take());
 
-            // Handle child process exit
-            result = child.wait() => {
-                match result {
-                    Ok(status) => {
-                        eprintln!("Child process exited with status: {}", status);
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to wait for child process: {}", e);
-                        break;
-                    }
-                }
+        // 5. DeleteProcThreadAttributeList:
+        if !self.attr_list_buf.is_empty() {
+            unsafe {
+                let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(
+                    self.attr_list_buf.as_mut_ptr() as *mut c_void,
+                );
+                DeleteProcThreadAttributeList(attr_list);
             }
         }
     }
+}
 
-    // Ensure child process is terminated
-    if let Err(e) = child.kill().await {
-        eprintln!("Failed to kill child process: {}", e);
+/// Escapes a single argument for a Windows command line following msvcrt conventions.
+/// This replicates the logic from std::sys::windows::args::append_arg.
+#[cfg(windows)]
+fn escape_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_string();
+    }
+    let needs_quoting = arg.contains(|c: char| c == ' ' || c == '\t' || c == '"');
+    if !needs_quoting {
+        return arg.to_string();
+    }
+    let mut escaped = String::from('"');
+    let mut backslashes: usize = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                // Double the backslashes before a quote, then escape the quote
+                for _ in 0..backslashes * 2 {
+                    escaped.push('\\');
+                }
+                backslashes = 0;
+                escaped.push('\\');
+                escaped.push('"');
+            }
+            _ => {
+                // Emit accumulated backslashes as-is (they don't precede a quote)
+                for _ in 0..backslashes {
+                    escaped.push('\\');
+                }
+                backslashes = 0;
+                escaped.push(c);
+            }
+        }
+    }
+    // Double trailing backslashes before the closing quote
+    for _ in 0..backslashes * 2 {
+        escaped.push('\\');
+    }
+    escaped.push('"');
+    escaped
+}
+
+#[cfg(windows)]
+impl ConPty {
+    fn new(winsize: Winsize, command: &str) -> Result<Self> {
+        unsafe {
+            // 1. Create pipe pairs — wrap each end immediately
+            let (mut input_read_raw, mut input_write_raw) =
+                (HANDLE::default(), HANDLE::default());
+            let (mut output_read_raw, mut output_write_raw) =
+                (HANDLE::default(), HANDLE::default());
+            CreatePipe(&mut input_read_raw, &mut input_write_raw, None, 0)?;
+            let input_read = OwnedHandle::from_raw_handle(input_read_raw.0 as *mut _);
+            let input_write = OwnedHandle::from_raw_handle(input_write_raw.0 as *mut _);
+            CreatePipe(&mut output_read_raw, &mut output_write_raw, None, 0)?;
+            let output_read = OwnedHandle::from_raw_handle(output_read_raw.0 as *mut _);
+            let output_write = OwnedHandle::from_raw_handle(output_write_raw.0 as *mut _);
+
+            // 2. Create pseudo-console
+            let size = COORD {
+                X: winsize.ws_col.min(i16::MAX as u16) as i16,
+                Y: winsize.ws_row.min(i16::MAX as u16) as i16,
+            };
+            let hpc = CreatePseudoConsole(
+                size,
+                HANDLE(input_read.as_raw_handle() as isize),
+                HANDLE(output_write.as_raw_handle() as isize),
+                0,
+            )?;
+
+            // 3. Close pipe ends given to ConPTY (it duplicated them)
+            drop(input_read);
+            drop(output_write);
+
+            // Build partial ConPty immediately so Drop covers hpc on any later failure
+            let mut conpty = ConPty {
+                hpc,
+                input_write: Some(input_write),
+                output_read: Some(output_read),
+                proc_handle: None,
+                thread_handle: None,
+                attr_list_buf: vec![],
+            };
+
+            // 4. Initialize proc thread attribute list (two-call pattern)
+            let mut attr_list_size: usize = 0;
+            let _ = InitializeProcThreadAttributeList(None, 1, None, &mut attr_list_size);
+            conpty.attr_list_buf = vec![0u8; attr_list_size];
+            let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(
+                conpty.attr_list_buf.as_mut_ptr() as *mut c_void,
+            );
+            InitializeProcThreadAttributeList(Some(attr_list), 1, None, &mut attr_list_size)?;
+
+            // 5. Wire hpc into the attribute list
+            UpdateProcThreadAttribute(
+                attr_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                Some(&conpty.hpc as *const HPCON as *const c_void),
+                size_of::<HPCON>(),
+                None,
+                None,
+            )?;
+
+            // 6. Build STARTUPINFOEXW referencing the attribute list
+            let mut si_ex: STARTUPINFOEXW = zeroed();
+            si_ex.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+            si_ex.lpAttributeList = attr_list;
+
+            // 7. Build command line + CreateProcessW
+            let cmd_str = if command.is_empty() {
+                "cmd.exe".to_string()
+            } else {
+                format!("cmd.exe /c {}", escape_arg(command))
+            };
+            let mut cmd_wide: Vec<u16> =
+                cmd_str.encode_utf16().chain(std::iter::once(0u16)).collect();
+            let cmd_pwstr = PWSTR(cmd_wide.as_mut_ptr());
+
+            let mut proc_info: PROCESS_INFORMATION = zeroed();
+
+            CreateProcessW(
+                None,
+                cmd_pwstr,
+                None,
+                None,
+                false,
+                EXTENDED_STARTUPINFO_PRESENT,
+                None,
+                None,
+                &si_ex.StartupInfo as *const STARTUPINFOW,
+                &mut proc_info,
+            )?;
+
+            // 8. Extract process/thread handles from PROCESS_INFORMATION
+            conpty.proc_handle =
+                Some(OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _));
+            conpty.thread_handle =
+                Some(OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _));
+
+            Ok(conpty)
+        }
     }
 
-    Ok(())
+    async fn drive(
+        mut self,
+        input_rx: mpsc::Receiver<Vec<u8>>,
+        output_tx: mpsc::Sender<Vec<u8>>,
+        resize_rx: mpsc::Receiver<(u16, u16)>,
+    ) -> Result<()> {
+        // Take ownership of input_write for the write thread
+        let input_write = self
+            .input_write
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("input_write handle missing"))?;
+
+        // Take ownership of output_read for the read thread
+        let output_read = self
+            .output_read
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("output_read handle missing"))?;
+
+        // Spawn write thread — takes ownership of input_write
+        let mut input_rx = input_rx;
+        let mut write_handle = tokio::task::spawn_blocking(move || -> Option<OwnedHandle> {
+            let raw = HANDLE(input_write.as_raw_handle() as isize);
+            loop {
+                match input_rx.blocking_recv() {
+                    Some(data) => {
+                        let mut offset = 0;
+                        while offset < data.len() {
+                            let mut written: u32 = 0;
+                            let ok = unsafe {
+                                WriteFile(
+                                    raw,
+                                    Some(&data[offset..]),
+                                    Some(&mut written),
+                                    None,
+                                )
+                            };
+                            if ok.is_err() {
+                                // WriteFile failed — return ownership for cleanup
+                                return Some(input_write);
+                            }
+                            offset += written as usize;
+                        }
+                    }
+                    None => {
+                        // Channel closed (sender dropped) — drop input_write to propagate EOF
+                        drop(input_write);
+                        return None;
+                    }
+                }
+            }
+        });
+
+        // Spawn read thread — takes ownership of output_read
+        let output_tx_clone = output_tx.clone();
+        let mut read_handle = tokio::task::spawn_blocking(move || {
+            let raw = HANDLE(output_read.as_raw_handle() as isize);
+            let mut buf = vec![0u8; READ_BUF_SIZE];
+            loop {
+                let mut bytes_read: u32 = 0;
+                let ok = unsafe {
+                    ReadFile(
+                        raw,
+                        Some(&mut buf),
+                        Some(&mut bytes_read),
+                        None,
+                    )
+                };
+                if ok.is_err() || bytes_read == 0 {
+                    break;
+                }
+                let data = buf[..bytes_read as usize].to_vec();
+                if output_tx_clone.blocking_send(data).is_err() {
+                    break;
+                }
+            }
+            drop(output_read);
+        });
+
+        // Spawn resize task
+        let hpc = self.hpc;
+        let resize_task = tokio::spawn(resize_loop(hpc, resize_rx));
+
+        // Get raw process handle for waiting.
+        // Safety: self.proc_handle is not dropped until after all tasks using
+        // this raw copy have been awaited (see cleanup step 4).
+        let proc_raw = HANDLE(
+            self.proc_handle
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("proc_handle missing"))?
+                .as_raw_handle() as isize,
+        );
+
+        // Spawn a task to wait for child process exit
+        let mut wait_handle = tokio::task::spawn_blocking(move || {
+            unsafe {
+                WaitForSingleObject(proc_raw, u32::MAX);
+            }
+        });
+
+        // Wait for any of the three events.
+        // Use &mut references to preserve JoinHandles for cleanup.
+        #[derive(PartialEq)]
+        enum Finished { Write, Read, Wait }
+        let finished = tokio::select! {
+            result = &mut write_handle => {
+                // Write thread finished (channel closed or WriteFile failed)
+                if let Ok(Some(handle)) = result {
+                    drop(handle);
+                }
+                Finished::Write
+            }
+            _ = &mut read_handle => {
+                // Read thread finished (EOF or pipe error)
+                Finished::Read
+            }
+            _ = &mut wait_handle => {
+                // Child process exited
+                Finished::Wait
+            }
+        };
+
+        // --- Cleanup sequence ---
+
+        // 1. Abort the resize task
+        resize_task.abort();
+
+        // 2. ClosePseudoConsole in spawn_blocking (may briefly block).
+        //    This breaks the output pipe (unblocking the read thread's ReadFile)
+        //    and signals the child process to exit (unblocking the wait thread).
+        let hpc_val = self.hpc;
+        if hpc_val.0 != 0 {
+            tokio::task::spawn_blocking(move || unsafe {
+                ClosePseudoConsole(hpc_val);
+            })
+            .await?;
+            // Mark as consumed so Drop doesn't call it again
+            self.hpc = HPCON(0);
+        }
+
+        // 3. Wait for child to exit or kill it.
+        //    Safety: proc_raw is a copy of self.proc_handle's raw value.
+        //    self.proc_handle is not dropped until step 5, after all tasks
+        //    using proc_raw have been awaited in step 4.
+        if proc_raw.0 != 0 {
+            tokio::task::spawn_blocking(move || unsafe {
+                let wait_result = WaitForSingleObject(proc_raw, 5000);
+                if wait_result != WAIT_OBJECT_0 {
+                    let _ = TerminateProcess(proc_raw, 1);
+                    WaitForSingleObject(proc_raw, u32::MAX);
+                }
+            })
+            .await?;
+        }
+
+        // 4. All blocking threads should now be done (ClosePseudoConsole broke
+        //    the pipe and the child has exited). Await remaining JoinHandles to
+        //    ensure no thread still holds a raw handle copy before we drop self.
+        if finished != Finished::Write { let _ = write_handle.await; }
+        if finished != Finished::Read { let _ = read_handle.await; }
+        if finished != Finished::Wait { let _ = wait_handle.await; }
+
+        // 5. Drop self — closes proc_handle/thread_handle,
+        //    calls DeleteProcThreadAttributeList.
+        //    output_read was already consumed by the read thread.
+        drop(self);
+
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+async fn resize_loop(hpc: HPCON, mut resize_rx: mpsc::Receiver<(u16, u16)>) {
+    while let Some((cols, rows)) = resize_rx.recv().await {
+        let coord = COORD {
+            X: cols.min(i16::MAX as u16) as i16,
+            Y: rows.min(i16::MAX as u16) as i16,
+        };
+        unsafe {
+            let _ = ResizePseudoConsole(hpc, coord);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn spawn(
+    command: String,
+    winsize: Winsize,
+    input_rx: mpsc::Receiver<Vec<u8>>,
+    output_tx: mpsc::Sender<Vec<u8>>,
+    resize_rx: mpsc::Receiver<(u16, u16)>,
+) -> Result<impl Future<Output = Result<()>>> {
+    let conpty = ConPty::new(winsize, &command)?;
+    Ok(conpty.drive(input_rx, output_tx, resize_rx))
 }

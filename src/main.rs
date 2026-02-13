@@ -20,12 +20,13 @@ async fn main() -> Result<()> {
     let (output_tx, output_rx) = mpsc::channel(1024);
     let (command_tx, command_rx) = mpsc::channel(1024);
     let (clients_tx, clients_rx) = mpsc::channel(1);
+    let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>(16);
 
     start_http_api(cli.listen, clients_tx.clone()).await?;
     let api = start_stdio_api(command_tx, clients_tx, cli.subscribe.unwrap_or_default());
-    let pty = start_pty(cli.command, &cli.size, input_rx, output_tx)?;
+    let pty = start_pty(cli.command, &cli.size, input_rx, output_tx, resize_rx)?;
     let session = build_session(&cli.size);
-    run_event_loop(output_rx, input_tx, command_rx, clients_rx, session, api).await?;
+    run_event_loop(output_rx, input_tx, command_rx, clients_rx, session, api, resize_tx).await?;
     pty.await?
 }
 
@@ -46,13 +47,14 @@ fn start_pty(
     size: &cli::Size,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
+    resize_rx: mpsc::Receiver<(u16, u16)>,
 ) -> Result<JoinHandle<Result<()>>> {
     let command = command.join(" ");
     let winsize = **size;
     eprintln!("launching \"{}\" in terminal of size {}", command, size);
 
     Ok(tokio::spawn(pty::spawn(
-        command, winsize, input_rx, output_tx,
+        command, winsize, input_rx, output_tx, resize_rx,
     )?))
 }
 
@@ -75,6 +77,7 @@ async fn run_event_loop(
     mut clients_rx: mpsc::Receiver<session::Client>,
     mut session: Session,
     mut api_handle: JoinHandle<Result<()>>,
+    resize_tx: mpsc::Sender<(u16, u16)>,
 ) -> Result<()> {
     let mut serving = true;
 
@@ -106,6 +109,9 @@ async fn run_event_loop(
 
                     Some(Command::Resize(cols, rows)) => {
                         session.resize(cols, rows);
+                        let cols_u16 = u16::try_from(cols).unwrap_or(u16::MAX);
+                        let rows_u16 = u16::try_from(rows).unwrap_or(u16::MAX);
+                        let _ = resize_tx.send((cols_u16, rows_u16)).await;
                     }
 
                     None => {

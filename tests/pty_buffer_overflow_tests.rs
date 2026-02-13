@@ -208,7 +208,8 @@ async fn test_rapid_multiple_commands() {
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx).unwrap();
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx).unwrap();
 
     // Spawn PTY driver
     tokio::spawn(pty_future);
@@ -338,7 +339,8 @@ async fn run_command_with_pty(command: String) -> Result<String, String> {
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let shell_command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(shell_command, winsize, input_rx, output_tx)
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(shell_command, winsize, input_rx, output_tx, resize_rx)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
     // Spawn PTY driver  
@@ -390,7 +392,8 @@ async fn run_command_bytes_with_pty(bytes: Vec<u8>) -> Result<String, String> {
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx)
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
     let pty_handle = tokio::spawn(pty_future);
@@ -438,7 +441,8 @@ async fn run_command_chunked_with_pty(text: String, chunk_size: usize) -> Result
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx)
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
     let pty_handle = tokio::spawn(pty_future);
