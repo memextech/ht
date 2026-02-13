@@ -56,6 +56,38 @@ use windows::Win32::System::Threading::{
 #[cfg(windows)]
 use windows::core::PWSTR;
 
+/// A `Send`-safe wrapper for Windows handles (`HANDLE` / `HPCON`).
+///
+/// In the `windows` 0.58.0 crate these types wrap `*mut c_void` which is
+/// `!Send`.  Windows handles are plain integer-like tokens that are safe to
+/// use from any thread, so we store the pointer as an `isize` (which *is*
+/// `Send`) and reconstruct the original type on demand.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct SendHandle(isize);
+
+#[cfg(windows)]
+unsafe impl Send for SendHandle {}
+
+#[cfg(windows)]
+impl SendHandle {
+    fn from_handle(h: HANDLE) -> Self {
+        Self(h.0 as isize)
+    }
+    fn to_handle(self) -> HANDLE {
+        HANDLE(self.0 as *mut c_void)
+    }
+    fn from_hpcon(h: HPCON) -> Self {
+        Self(h.0 as isize)
+    }
+    fn to_hpcon(self) -> HPCON {
+        HPCON(self.0 as *mut c_void)
+    }
+    fn is_null(self) -> bool {
+        self.0 == 0
+    }
+}
+
 // Common winsize structure that works across platforms
 #[cfg(unix)]
 pub use nix::pty::Winsize;
@@ -226,6 +258,10 @@ struct ConPty {
 }
 
 #[cfg(windows)]
+// Safety: ConPty's HPCON is an opaque Windows handle, safe to use from any thread.
+unsafe impl Send for ConPty {}
+
+#[cfg(windows)]
 impl Drop for ConPty {
     fn drop(&mut self) {
         // 1. Close input_write if still held (not yet taken by write thread).
@@ -235,7 +271,7 @@ impl Drop for ConPty {
         //    drive() zeroes hpc after calling ClosePseudoConsole in spawn_blocking.
         //    In the abort path (Drop called without drive() completing),
         //    we must call it here.
-        if self.hpc.0 != 0 {
+        if !self.hpc.0.is_null() {
             unsafe {
                 ClosePseudoConsole(self.hpc);
             }
@@ -477,22 +513,22 @@ impl ConPty {
         });
 
         // Spawn resize task
-        let hpc = self.hpc;
-        let resize_task = tokio::spawn(resize_loop(hpc, resize_rx));
+        let hpc_send = SendHandle::from_hpcon(self.hpc);
+        let resize_task = tokio::spawn(resize_loop(hpc_send, resize_rx));
 
         // Get raw process handle for waiting.
         // Safety: self.proc_handle is not dropped until after all tasks using
         // this raw copy have been awaited (see cleanup step 4).
-        let proc_raw = HANDLE(
+        let proc_send = SendHandle::from_handle(HANDLE(
             self.proc_handle
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("proc_handle missing"))?
                 .as_raw_handle(),
-        );
+        ));
 
         // Spawn a task to wait for child process exit
         let mut wait_handle = tokio::task::spawn_blocking(move || unsafe {
-            WaitForSingleObject(proc_raw, u32::MAX);
+            WaitForSingleObject(proc_send.to_handle(), u32::MAX);
         });
 
         // Wait for any of the three events.
@@ -529,22 +565,23 @@ impl ConPty {
         // 2. ClosePseudoConsole in spawn_blocking (may briefly block).
         //    This breaks the output pipe (unblocking the read thread's ReadFile)
         //    and signals the child process to exit (unblocking the wait thread).
-        let hpc_val = self.hpc;
-        if hpc_val.0 != 0 {
+        let hpc_send = SendHandle::from_hpcon(self.hpc);
+        if !hpc_send.is_null() {
             tokio::task::spawn_blocking(move || unsafe {
-                ClosePseudoConsole(hpc_val);
+                ClosePseudoConsole(hpc_send.to_hpcon());
             })
             .await?;
             // Mark as consumed so Drop doesn't call it again
-            self.hpc = HPCON(0);
+            self.hpc = HPCON(std::ptr::null_mut());
         }
 
         // 3. Wait for child to exit or kill it.
-        //    Safety: proc_raw is a copy of self.proc_handle's raw value.
+        //    Safety: proc_send is a copy of self.proc_handle's raw value.
         //    self.proc_handle is not dropped until step 5, after all tasks
-        //    using proc_raw have been awaited in step 4.
-        if !proc_raw.0.is_null() {
+        //    using proc_send have been awaited in step 4.
+        if !proc_send.is_null() {
             tokio::task::spawn_blocking(move || unsafe {
+                let proc_raw = proc_send.to_handle();
                 let wait_result = WaitForSingleObject(proc_raw, 5000);
                 if wait_result != WAIT_OBJECT_0 {
                     let _ = TerminateProcess(proc_raw, 1);
@@ -577,14 +614,14 @@ impl ConPty {
 }
 
 #[cfg(windows)]
-async fn resize_loop(hpc: HPCON, mut resize_rx: mpsc::Receiver<(u16, u16)>) {
+async fn resize_loop(hpc: SendHandle, mut resize_rx: mpsc::Receiver<(u16, u16)>) {
     while let Some((cols, rows)) = resize_rx.recv().await {
         let coord = COORD {
             X: cols.min(i16::MAX as u16) as i16,
             Y: rows.min(i16::MAX as u16) as i16,
         };
         unsafe {
-            let _ = ResizePseudoConsole(hpc, coord);
+            let _ = ResizePseudoConsole(hpc.to_hpcon(), coord);
         }
     }
 }
