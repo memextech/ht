@@ -37,7 +37,7 @@ use std::mem::{size_of, zeroed};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 #[cfg(windows)]
@@ -326,8 +326,8 @@ impl ConPty {
             };
             let hpc = CreatePseudoConsole(
                 size,
-                HANDLE(input_read.as_raw_handle() as isize),
-                HANDLE(output_write.as_raw_handle() as isize),
+                HANDLE(input_read.as_raw_handle()),
+                HANDLE(output_write.as_raw_handle()),
                 0,
             )?;
 
@@ -347,11 +347,16 @@ impl ConPty {
 
             // 4. Initialize proc thread attribute list (two-call pattern)
             let mut attr_list_size: usize = 0;
-            let _ = InitializeProcThreadAttributeList(None, 1, None, &mut attr_list_size);
+            let _ = InitializeProcThreadAttributeList(
+                LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
+                1,
+                0,
+                &mut attr_list_size,
+            );
             conpty.attr_list_buf = vec![0u8; attr_list_size];
             let attr_list =
                 LPPROC_THREAD_ATTRIBUTE_LIST(conpty.attr_list_buf.as_mut_ptr() as *mut c_void);
-            InitializeProcThreadAttributeList(Some(attr_list), 1, None, &mut attr_list_size)?;
+            InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size)?;
 
             // 5. Wire hpc into the attribute list
             UpdateProcThreadAttribute(
@@ -426,7 +431,7 @@ impl ConPty {
         // Spawn write thread — takes ownership of input_write
         let mut input_rx = input_rx;
         let mut write_handle = tokio::task::spawn_blocking(move || -> Option<OwnedHandle> {
-            let raw = HANDLE(input_write.as_raw_handle() as isize);
+            let raw = HANDLE(input_write.as_raw_handle());
             loop {
                 match input_rx.blocking_recv() {
                     Some(data) => {
@@ -455,7 +460,7 @@ impl ConPty {
         // Spawn read thread — takes ownership of output_read
         let output_tx_clone = output_tx.clone();
         let mut read_handle = tokio::task::spawn_blocking(move || {
-            let raw = HANDLE(output_read.as_raw_handle() as isize);
+            let raw = HANDLE(output_read.as_raw_handle());
             let mut buf = vec![0u8; READ_BUF_SIZE];
             loop {
                 let mut bytes_read: u32 = 0;
@@ -482,7 +487,7 @@ impl ConPty {
             self.proc_handle
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("proc_handle missing"))?
-                .as_raw_handle() as isize,
+                .as_raw_handle(),
         );
 
         // Spawn a task to wait for child process exit
@@ -538,7 +543,7 @@ impl ConPty {
         //    Safety: proc_raw is a copy of self.proc_handle's raw value.
         //    self.proc_handle is not dropped until step 5, after all tasks
         //    using proc_raw have been awaited in step 4.
-        if proc_raw.0 != 0 {
+        if !proc_raw.0.is_null() {
             tokio::task::spawn_blocking(move || unsafe {
                 let wait_result = WaitForSingleObject(proc_raw, 5000);
                 if wait_result != WAIT_OBJECT_0 {
