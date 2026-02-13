@@ -142,7 +142,7 @@ async fn send_command_with_chunking(
 
                 // Send in chunks
                 let bytes = full_input.as_bytes();
-                let num_chunks = (bytes.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+                let num_chunks = bytes.len().div_ceil(CHUNK_SIZE);
 
                 for (i, chunk) in bytes.chunks(CHUNK_SIZE).enumerate() {
                     let chunk_str = String::from_utf8_lossy(chunk).to_string();

@@ -27,7 +27,7 @@ pub fn read<R: Read + ?Sized>(source: &mut R, buf: &mut [u8]) -> io::Result<Opti
             } else if e.raw_os_error().is_some_and(|code| code == 5) {
                 Ok(Some(0))
             } else {
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -44,7 +44,7 @@ pub fn write<W: Write + ?Sized>(sink: &mut W, buf: &[u8]) -> io::Result<Option<u
             } else if e.raw_os_error().is_some_and(|code| code == 5) {
                 Ok(Some(0))
             } else {
-                return Err(e);
+                Err(e)
             }
         }
     }
