@@ -2,11 +2,15 @@
 ///
 /// This test validates that the chunking implementation actually prevents
 /// buffer overflow when sending large commands through HT.
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::time::Duration;
 
 /// Test that HT with chunking fix can handle large heredocs
+#[cfg(unix)]
 #[test]
 fn test_large_heredoc_with_chunking_fix() {
     println!("\n=== Testing Large Heredoc with Chunking Fix ===\n");
@@ -57,6 +61,7 @@ fn test_large_heredoc_with_chunking_fix() {
     println!("✓ Very large heredocs work");
 }
 
+#[cfg(unix)]
 fn test_heredoc_size(ht_binary: &str, size: usize) {
     let content = "x".repeat(size);
     let heredoc_cmd = format!(
