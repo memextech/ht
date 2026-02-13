@@ -58,10 +58,11 @@ use windows::core::PWSTR;
 
 /// A `Send`-safe wrapper for Windows handles (`HANDLE` / `HPCON`).
 ///
-/// In the `windows` 0.58.0 crate these types wrap `*mut c_void` which is
-/// `!Send`.  Windows handles are plain integer-like tokens that are safe to
-/// use from any thread, so we store the pointer as an `isize` (which *is*
-/// `Send`) and reconstruct the original type on demand.
+/// In the `windows` 0.58.0 crate `HANDLE` wraps `*mut c_void` (which is
+/// `!Send`), while `HPCON` still wraps `isize`.  Windows handles are plain
+/// integer-like tokens that are safe to use from any thread, so we store
+/// the value as a single `isize` (which *is* `Send`) and reconstruct the
+/// original type on demand.
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 struct SendHandle(isize);
@@ -81,7 +82,7 @@ impl SendHandle {
         Self(h.0 as isize)
     }
     fn to_hpcon(self) -> HPCON {
-        HPCON(self.0 as *mut c_void)
+        HPCON(self.0)
     }
     fn is_null(self) -> bool {
         self.0 == 0
@@ -271,7 +272,7 @@ impl Drop for ConPty {
         //    drive() zeroes hpc after calling ClosePseudoConsole in spawn_blocking.
         //    In the abort path (Drop called without drive() completing),
         //    we must call it here.
-        if !self.hpc.0.is_null() {
+        if self.hpc.0 != 0 {
             unsafe {
                 ClosePseudoConsole(self.hpc);
             }
@@ -572,7 +573,7 @@ impl ConPty {
             })
             .await?;
             // Mark as consumed so Drop doesn't call it again
-            self.hpc = HPCON(std::ptr::null_mut());
+            self.hpc = HPCON(0);
         }
 
         // 3. Wait for child to exit or kill it.
