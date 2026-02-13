@@ -47,7 +47,8 @@ copy the binary to a directory in your `$PATH`.
 
 ## Usage
 
-Run `ht` to start interactive bash shell running in a PTY (pseudo-terminal).
+Run `ht` to start an interactive shell in a PTY (pseudo-terminal): bash on
+Unix/macOS, cmd.exe on Windows.
 
 To launch a different program (a different shell, another program) run `ht
 <command> <args...>`. For example:
@@ -57,9 +58,9 @@ To launch a different program (a different shell, another program) run `ht
 - `ht nano /etc/fstab` - starts nano editor with /etc/fstab opened
 
 Another way to run a specific program, e.g. `nano`, is to launch `ht` without a
-command, i.e. use bash by default, and start nano from bash by sending `nano\r`
-("nano" followed by "return" control character) to the process input. See [input
-command](#input) below.
+command, i.e. use the default shell, and start nano from there by sending
+`nano\r` ("nano" followed by "return" control character) to the process input.
+See [input command](#input) below.
 
 Default size of the virtual terminal window is 120x40 (cols by rows), which can
 be changed with `--size` argument. For example: `ht --size 80x24`. The window

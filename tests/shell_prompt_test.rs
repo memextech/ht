@@ -32,7 +32,7 @@ mod unix {
         let mut vt = avt::Vt::builder().size(80, 24).resizable(true).build();
 
         let command = "env PS1='TEST_PROMPT> ' bash --norc --noprofile".to_string();
-        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx)
+        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
             .expect("failed to spawn PTY");
         let pty_handle = tokio::spawn(pty_future);
 
@@ -116,7 +116,7 @@ mod windows {
         const PROMPT_SCRIPT_B64: &str = "ZgB1AG4AYwB0AGkAbwBuACAAcAByAG8AbQBwAHQAIAB7ACAAJwBUAEUAUwBUAF8AUABSAE8ATQBQAFQAPgAgACcAIAB9AA==";
         let command =
             format!("pwsh -NoProfile -NoLogo -NoExit -EncodedCommand {PROMPT_SCRIPT_B64}");
-        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx)
+        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
             .expect("failed to spawn PTY");
         let pty_handle = tokio::spawn(pty_future);
 

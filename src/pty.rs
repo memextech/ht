@@ -108,11 +108,18 @@ pub fn spawn(
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
     _resize_rx: mpsc::Receiver<(u16, u16)>,
+    initial_input: Option<Vec<u8>>,
 ) -> Result<impl Future<Output = Result<()>>> {
     let result = unsafe { pty::forkpty(Some(&winsize), None) }?;
 
     match result.fork_result {
-        ForkResult::Parent { child } => Ok(drive_child(child, result.master, input_rx, output_tx)),
+        ForkResult::Parent { child } => Ok(drive_child(
+            child,
+            result.master,
+            input_rx,
+            output_tx,
+            initial_input,
+        )),
 
         ForkResult::Child => {
             exec(command)?;
@@ -127,8 +134,9 @@ async fn drive_child(
     master: OwnedFd,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
+    initial_input: Option<Vec<u8>>,
 ) -> Result<()> {
-    let result = do_drive_child(master, input_rx, output_tx).await;
+    let result = do_drive_child(master, input_rx, output_tx, initial_input).await;
     eprintln!("sending HUP signal to the child process");
     unsafe { libc::kill(child.as_raw(), libc::SIGHUP) };
     eprintln!("waiting for the child process to exit");
@@ -150,9 +158,10 @@ async fn do_drive_child(
     master: OwnedFd,
     mut input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
+    initial_input: Option<Vec<u8>>,
 ) -> Result<()> {
     let mut buf = [0u8; READ_BUF_SIZE];
-    let mut input: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
+    let mut input: Vec<u8> = initial_input.unwrap_or_default();
     nbio::set_non_blocking(&master.as_raw_fd())?;
     let master_fd = AsyncFd::new(master)?;
     let raw_fd = master_fd.get_ref().as_raw_fd();
@@ -301,7 +310,7 @@ impl Drop for ConPty {
 /// Escapes a single argument for a Windows command line following msvcrt conventions.
 /// This replicates the logic from std::sys::windows::args::append_arg.
 #[cfg(windows)]
-fn escape_arg(arg: &str) -> String {
+pub fn escape_arg(arg: &str) -> String {
     if arg.is_empty() {
         return "\"\"".to_string();
     }
@@ -415,7 +424,7 @@ impl ConPty {
             let cmd_str = if command.is_empty() {
                 "cmd.exe".to_string()
             } else {
-                format!("cmd.exe /c {}", escape_arg(command))
+                command.to_string()
             };
             let mut cmd_wide: Vec<u16> = cmd_str
                 .encode_utf16()
@@ -452,6 +461,7 @@ impl ConPty {
         input_rx: mpsc::Receiver<Vec<u8>>,
         output_tx: mpsc::Sender<Vec<u8>>,
         resize_rx: mpsc::Receiver<(u16, u16)>,
+        initial_input: Option<Vec<u8>>,
     ) -> Result<()> {
         // Take ownership of input_write for the write thread
         let input_write = self
@@ -469,6 +479,21 @@ impl ConPty {
         let mut input_rx = input_rx;
         let mut write_handle = tokio::task::spawn_blocking(move || -> Option<OwnedHandle> {
             let raw = HANDLE(input_write.as_raw_handle());
+
+            // Inject initial input before relaying user input
+            if let Some(data) = initial_input {
+                let mut offset = 0;
+                while offset < data.len() {
+                    let mut written: u32 = 0;
+                    let ok =
+                        unsafe { WriteFile(raw, Some(&data[offset..]), Some(&mut written), None) };
+                    if ok.is_err() {
+                        return Some(input_write);
+                    }
+                    offset += written as usize;
+                }
+            }
+
             loop {
                 match input_rx.blocking_recv() {
                     Some(data) => {
@@ -634,7 +659,8 @@ pub fn spawn(
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
     resize_rx: mpsc::Receiver<(u16, u16)>,
+    initial_input: Option<Vec<u8>>,
 ) -> Result<impl Future<Output = Result<()>>> {
     let conpty = ConPty::new(winsize, &command)?;
-    Ok(conpty.drive(input_rx, output_tx, resize_rx))
+    Ok(conpty.drive(input_rx, output_tx, resize_rx, initial_input))
 }

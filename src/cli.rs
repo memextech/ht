@@ -13,7 +13,8 @@ pub struct Cli {
     pub size: Size,
 
     /// Command to run inside the terminal
-    #[arg(default_value = "bash")]
+    #[cfg_attr(unix, arg(default_value = "bash"))]
+    #[cfg_attr(windows, arg(default_value = "cmd.exe"))]
     pub command: Vec<String>,
 
     /// Enable HTTP server

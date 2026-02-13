@@ -29,7 +29,7 @@ async fn test_pty_write_buffer_limits() {
 
     let command = "/bin/cat".to_string(); // Use cat to echo back input
     let (_resize_tx, resize_rx) = mpsc::channel(1);
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx).unwrap();
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None).unwrap();
 
     tokio::spawn(pty_future);
 
@@ -143,7 +143,8 @@ async fn test_chunked_vs_bulk_write() {
 
         let command = "/bin/cat".to_string();
         let (_resize_tx, resize_rx) = mpsc::channel(1);
-        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx).unwrap();
+        let pty_future =
+            pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None).unwrap();
         tokio::spawn(pty_future);
 
         let data = "X".repeat(data_size);
@@ -245,7 +246,7 @@ async fn test_rapid_consecutive_writes() {
 
     let command = "/bin/cat".to_string();
     let (_resize_tx, resize_rx) = mpsc::channel(1);
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx).unwrap();
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None).unwrap();
     tokio::spawn(pty_future);
 
     println!("\n=== Testing Rapid Consecutive Writes ===");
@@ -318,7 +319,8 @@ async fn test_optimal_chunk_delay() {
 
         let command = "/bin/cat".to_string();
         let (_resize_tx, resize_rx) = mpsc::channel(1);
-        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx).unwrap();
+        let pty_future =
+            pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None).unwrap();
         tokio::spawn(pty_future);
 
         let chunk_size = 500;
@@ -387,7 +389,8 @@ async fn test_find_actual_buffer_size() {
 
         let command = "/bin/cat".to_string();
         let (_resize_tx, resize_rx) = mpsc::channel(1);
-        let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx).unwrap();
+        let pty_future =
+            pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None).unwrap();
         tokio::spawn(pty_future);
 
         let data = "W".repeat(size);

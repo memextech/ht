@@ -45,6 +45,42 @@ fn start_stdio_api(
     tokio::spawn(api::stdio::start(command_tx, clients_tx, sub))
 }
 
+#[cfg(windows)]
+enum CommandKind {
+    Direct,     // executable — launch directly
+    NeedsShell, // builtin or metacharacters — use cmd.exe + inject
+}
+
+#[cfg(windows)]
+fn classify_command(args: &[String]) -> CommandKind {
+    let first = match args.first() {
+        Some(s) => s.to_ascii_lowercase(),
+        None => return CommandKind::Direct, // empty → default shell
+    };
+
+    // Shell metacharacters inside any argument — the user intentionally
+    // passed a pipeline or redirect string (e.g. ht "dir | findstr foo"
+    // or ht -- dir ^| findstr foo). These need cmd.exe to interpret.
+    for arg in args {
+        if arg.contains(['|', '>', '<', '&', '^', '(', ')']) {
+            return CommandKind::NeedsShell;
+        }
+    }
+
+    // cmd.exe internal commands (case-insensitive)
+    const BUILTINS: &[&str] = &[
+        "assoc", "break", "call", "cd", "chdir", "cls", "color", "copy", "date", "del", "dir",
+        "echo", "endlocal", "erase", "exit", "for", "ftype", "goto", "if", "md", "mkdir", "mklink",
+        "move", "path", "pause", "popd", "prompt", "pushd", "rd", "rem", "ren", "rename", "rmdir",
+        "set", "setlocal", "shift", "start", "time", "title", "type", "ver", "verify", "vol",
+    ];
+    if BUILTINS.contains(&first.as_str()) {
+        return CommandKind::NeedsShell;
+    }
+
+    CommandKind::Direct
+}
+
 fn start_pty(
     command: Vec<String>,
     size: &cli::Size,
@@ -52,12 +88,49 @@ fn start_pty(
     output_tx: mpsc::Sender<Vec<u8>>,
     resize_rx: mpsc::Receiver<(u16, u16)>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let command = command.join(" ");
     let winsize = **size;
-    eprintln!("launching \"{}\" in terminal of size {}", command, size);
+
+    #[cfg(unix)]
+    let (command_str, initial_input) = {
+        let cmd = command.join(" ");
+        eprintln!("launching \"{}\" in terminal of size {}", cmd, size);
+        (cmd, None)
+    };
+
+    #[cfg(windows)]
+    let (command_str, initial_input) = {
+        match classify_command(&command) {
+            CommandKind::Direct => {
+                let cmd = command
+                    .iter()
+                    .map(|a| pty::escape_arg(a))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                eprintln!("launching \"{}\" in terminal of size {}", cmd, size);
+                (cmd, None)
+            }
+            CommandKind::NeedsShell => {
+                let user_cmd = command.join(" ");
+                eprintln!(
+                    "launching cmd.exe for shell command \"{}\" \
+                     in terminal of size {}",
+                    user_cmd, size
+                );
+                // Inject command + exit to match cmd.exe /c semantics
+                // (exit after the command finishes, so scripts don't hang)
+                let inject = format!("{}\r\nexit\r\n", user_cmd);
+                ("cmd.exe".to_string(), Some(inject.into_bytes()))
+            }
+        }
+    };
 
     Ok(tokio::spawn(pty::spawn(
-        command, winsize, input_rx, output_tx, resize_rx,
+        command_str,
+        winsize,
+        input_rx,
+        output_tx,
+        resize_rx,
+        initial_input,
     )?))
 }
 
