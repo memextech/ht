@@ -79,7 +79,7 @@ impl SendHandle {
         HANDLE(self.0 as *mut c_void)
     }
     fn from_hpcon(h: HPCON) -> Self {
-        Self(h.0 as isize)
+        Self(h.0)
     }
     fn to_hpcon(self) -> HPCON {
         HPCON(self.0)
@@ -305,7 +305,7 @@ fn escape_arg(arg: &str) -> String {
     if arg.is_empty() {
         return "\"\"".to_string();
     }
-    let needs_quoting = arg.contains(|c: char| c == ' ' || c == '\t' || c == '"');
+    let needs_quoting = arg.contains([' ', '\t', '"']);
     if !needs_quoting {
         return arg.to_string();
     }
