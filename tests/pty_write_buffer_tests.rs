@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use ht_core::pty;
 use nix::pty::Winsize;
 /// Unit tests for PTY write buffer handling
