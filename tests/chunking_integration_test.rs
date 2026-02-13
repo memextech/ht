@@ -14,7 +14,7 @@ fn test_large_heredoc_with_chunking_fix() {
     // Build HT first
     println!("Building HT...");
     let build = Command::new("cargo")
-        .args(&["build", "--bin", "ht"])
+        .args(["build", "--bin", "ht"])
         .output()
         .expect("Failed to build HT");
 
@@ -86,25 +86,27 @@ EOF
         .spawn()
         .expect("Failed to spawn HT");
 
-    let stdin = child.stdin.as_mut().expect("Failed to get stdin");
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get stdin");
 
-    // Send the input command
-    stdin
-        .write_all(input_json.as_bytes())
-        .expect("Failed to write to stdin");
-    stdin.write_all(b"\n").expect("Failed to write newline");
+        // Send the input command
+        stdin
+            .write_all(input_json.as_bytes())
+            .expect("Failed to write to stdin");
+        stdin.write_all(b"\n").expect("Failed to write newline");
 
-    // Give it time to process
-    std::thread::sleep(Duration::from_millis(500));
+        // Give it time to process
+        std::thread::sleep(Duration::from_millis(500));
 
-    // Send exit command
-    let exit_json = serde_json::json!({"type": "input", "payload": "exit\n"}).to_string();
-    stdin
-        .write_all(exit_json.as_bytes())
-        .expect("Failed to write exit");
-    stdin.write_all(b"\n").expect("Failed to write newline");
-
-    drop(stdin);
+        // Send exit command
+        let exit_json = serde_json::json!({"type": "input", "payload": "exit\n"}).to_string();
+        stdin
+            .write_all(exit_json.as_bytes())
+            .expect("Failed to write exit");
+        stdin.write_all(b"\n").expect("Failed to write newline");
+    }
+    // Borrow ended; take ownership to actually close stdin
+    drop(child.stdin.take());
 
     // Wait for output with timeout
     let output = child.wait_with_output().expect("Failed to wait for output");
@@ -113,10 +115,8 @@ EOF
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Check for chunking message in stderr (for large inputs)
-    if size >= 1500 {
-        if stderr.contains("Large input detected") {
-            println!("  ✓ Chunking activated");
-        }
+    if size >= 1500 && stderr.contains("Large input detected") {
+        println!("  ✓ Chunking activated");
     }
 
     // Parse output events to verify data was received

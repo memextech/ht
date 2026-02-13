@@ -2,10 +2,8 @@
 ///
 /// These tests focus on the specific write buffer management logic
 /// without spawning actual PTY processes, to isolate the core issue.
-
 #[cfg(test)]
 mod pty_write_logic_tests {
-    use std::io::{self, Write};
 
     /// Simulates the PTY write behavior with a limited buffer
     struct MockPtyMaster {
@@ -330,7 +328,7 @@ mod pty_write_logic_tests {
             let data = "t".repeat(size);
 
             // Single write attempt (current behavior)
-            let result = pty.nb_write(data.as_bytes());
+            let _result = pty.nb_write(data.as_bytes());
             let (written, _, _) = pty.get_stats();
             let success = written == size;
 

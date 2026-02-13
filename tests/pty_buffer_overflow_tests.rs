@@ -1,3 +1,4 @@
+#![cfg(unix)]
 /// Tests for PTY buffer overflow issues when sending large heredocs
 ///
 /// This test suite reproduces the issue documented in:

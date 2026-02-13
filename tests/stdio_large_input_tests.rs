@@ -182,7 +182,7 @@ fn test_command_input_memory_overhead() {
     for size in sizes {
         let text = "z".repeat(size);
         let input_seq = InputSeq::Standard(text.clone());
-        let command = Command::Input(vec![input_seq]);
+        let _command = Command::Input(vec![input_seq]);
 
         // Serialize to JSON to see protocol overhead
         let json = serde_json::to_string(&json!({
@@ -249,7 +249,7 @@ fn test_realistic_gh_pr_create_scenarios() {
     println!("\n=== Realistic gh pr create Scenarios ===");
 
     for (name, size) in scenarios {
-        let body = format!("PR description line.\n").repeat(size / 25);
+        let body = "PR description line.\n".to_string().repeat(size / 25);
         let command = format!(
             r#"gh pr create --title "Fix something" --body "$(cat <<'EOF'
 {}
