@@ -125,44 +125,81 @@ async fn send_command_with_chunking(
                 // Small input - send directly
                 command_tx.send(Command::Input(seqs)).await?;
             } else {
-                // Large input - chunk it
+                // Large input - chunk it, preserving InputSeq variants
                 eprintln!(
                     "Large input detected ({} bytes), chunking into {}-byte pieces",
                     total_size, CHUNK_SIZE
                 );
 
-                // Flatten all sequences into a single string
-                let mut full_input = String::with_capacity(total_size);
+                let mut chunk: Vec<InputSeq> = Vec::new();
+                let mut chunk_size: usize = 0;
+                let mut chunk_index: usize = 0;
+
                 for seq in seqs {
-                    match seq {
-                        InputSeq::Standard(s) => full_input.push_str(&s),
-                        InputSeq::Cursor(s1, _) => full_input.push_str(&s1),
+                    let seq_size = seq_byte_size(&seq);
+
+                    // If this single Standard seq exceeds CHUNK_SIZE, split it
+                    if let InputSeq::Standard(ref s) = seq {
+                        if seq_size > CHUNK_SIZE {
+                            // Flush current chunk first
+                            if !chunk.is_empty() {
+                                command_tx
+                                    .send(Command::Input(std::mem::take(&mut chunk)))
+                                    .await?;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    CHUNK_DELAY_MS,
+                                ))
+                                .await;
+                                chunk_size = 0;
+                                chunk_index += 1;
+                            }
+
+                            // Split the large string on UTF-8 character boundaries
+                            let mut remaining = s.as_str();
+                            while !remaining.is_empty() {
+                                let end = remaining
+                                    .char_indices()
+                                    .take_while(|(idx, _)| *idx < CHUNK_SIZE)
+                                    .last()
+                                    .map(|(idx, ch)| idx + ch.len_utf8())
+                                    .unwrap_or(remaining.len());
+                                let chunk_str = &remaining[..end];
+                                remaining = &remaining[end..];
+
+                                command_tx
+                                    .send(Command::Input(vec![standard_key(chunk_str)]))
+                                    .await?;
+
+                                if !remaining.is_empty() {
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                                        CHUNK_DELAY_MS,
+                                    ))
+                                    .await;
+                                }
+                                chunk_index += 1;
+                            }
+                            continue;
+                        }
                     }
-                }
 
-                // Send in chunks, splitting on valid UTF-8 character boundaries
-                let mut remaining = full_input.as_str();
-                let mut chunk_index = 0;
-
-                while !remaining.is_empty() {
-                    let end = remaining
-                        .char_indices()
-                        .take_while(|(idx, _)| *idx < CHUNK_SIZE)
-                        .last()
-                        .map(|(idx, ch)| idx + ch.len_utf8())
-                        .unwrap_or(remaining.len());
-                    let chunk_str = &remaining[..end];
-                    remaining = &remaining[end..];
-
-                    command_tx
-                        .send(Command::Input(vec![standard_key(chunk_str)]))
-                        .await?;
-
-                    // Add delay between chunks (except after the last one)
-                    if !remaining.is_empty() {
+                    // Would adding this seq exceed the chunk size?
+                    if chunk_size + seq_size > CHUNK_SIZE && !chunk.is_empty() {
+                        command_tx
+                            .send(Command::Input(std::mem::take(&mut chunk)))
+                            .await?;
                         tokio::time::sleep(tokio::time::Duration::from_millis(CHUNK_DELAY_MS))
                             .await;
+                        chunk_size = 0;
+                        chunk_index += 1;
                     }
+
+                    chunk_size += seq_size;
+                    chunk.push(seq);
+                }
+
+                // Send remaining chunk
+                if !chunk.is_empty() {
+                    command_tx.send(Command::Input(chunk)).await?;
                     chunk_index += 1;
                 }
 
@@ -176,6 +213,13 @@ async fn send_command_with_chunking(
     }
 
     Ok(())
+}
+
+fn seq_byte_size(seq: &InputSeq) -> usize {
+    match seq {
+        InputSeq::Standard(s) => s.len(),
+        InputSeq::Cursor(s1, _) => s1.len(),
+    }
 }
 
 fn parse_line(line: &str) -> Result<command::Command, String> {
