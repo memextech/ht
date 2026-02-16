@@ -45,7 +45,8 @@ fn start_stdio_api(
     tokio::spawn(api::stdio::start(command_tx, clients_tx, sub))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq)]
 enum CommandKind {
     Direct,       // executable — launch directly
     ShellSyntax,  // metacharacters — inject raw into cmd.exe
@@ -57,7 +58,7 @@ enum CommandKind {
 /// two `%` signs — e.g. `%USERPROFILE%`, `%ProgramFiles(x86)%`).
 /// Single `%` (format strings like `%s`), `%%` (escaped percent), and
 /// URL encodings like `%20` (digits only, no closing `%`) are not matched.
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn contains_env_var(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -88,12 +89,26 @@ fn contains_env_var(s: &str) -> bool {
     false
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn classify_command(args: &[String]) -> CommandKind {
     let first = match args.first() {
         Some(s) => s.to_ascii_lowercase(),
         None => return CommandKind::Direct, // empty → default shell
     };
+
+    // Single-string command line: e.g. ht "echo hello" arrives as
+    // args = ["echo hello"]. When the first whitespace-delimited token
+    // has no backslash it is a command name, not a file path, so the
+    // user intended the whole string as a shell command line.  Strings
+    // whose first token contains '\' are paths with spaces
+    // (e.g. "C:\Program Files\foo.exe") and stay in the normal flow.
+    if args.len() == 1 {
+        if let Some(cmd_token) = first.split(' ').next() {
+            if cmd_token != first && !cmd_token.contains('\\') {
+                return CommandKind::ShellSyntax;
+            }
+        }
+    }
 
     // Pipe/redirect/chaining metacharacters in the first argument indicate the
     // user passed a shell command string (e.g. ht "dir | findstr foo").
@@ -274,4 +289,181 @@ async fn run_event_loop(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ── classify_command ────────────────────────────────────────────
+
+    #[test]
+    fn classify_empty_args_is_direct() {
+        assert_eq!(classify_command(&args(&[])), CommandKind::Direct);
+    }
+
+    #[test]
+    fn classify_single_executable_is_direct() {
+        assert_eq!(classify_command(&args(&["notepad"])), CommandKind::Direct);
+    }
+
+    #[test]
+    fn classify_multi_arg_executable_is_direct() {
+        assert_eq!(
+            classify_command(&args(&["python", "-c", "print()"])),
+            CommandKind::Direct
+        );
+    }
+
+    #[test]
+    fn classify_single_string_command_is_shell_syntax() {
+        assert_eq!(
+            classify_command(&args(&["echo hello"])),
+            CommandKind::ShellSyntax
+        );
+    }
+
+    #[test]
+    fn classify_single_string_with_switches_is_shell_syntax() {
+        assert_eq!(
+            classify_command(&args(&["dir /w"])),
+            CommandKind::ShellSyntax
+        );
+    }
+
+    #[test]
+    fn classify_single_string_path_with_spaces_is_direct() {
+        assert_eq!(
+            classify_command(&args(&["C:\\Program Files\\foo.exe"])),
+            CommandKind::Direct
+        );
+    }
+
+    #[test]
+    fn classify_single_string_relative_path_with_spaces_is_direct() {
+        assert_eq!(
+            classify_command(&args(&[".\\my app\\foo.exe"])),
+            CommandKind::Direct
+        );
+    }
+
+    #[test]
+    fn classify_metachar_pipe_is_shell_syntax() {
+        assert_eq!(
+            classify_command(&args(&["dir | findstr foo"])),
+            CommandKind::ShellSyntax
+        );
+    }
+
+    #[test]
+    fn classify_metachar_in_first_multi_arg_is_shell_syntax() {
+        assert_eq!(classify_command(&args(&["a|b"])), CommandKind::ShellSyntax);
+    }
+
+    #[test]
+    fn classify_metachar_in_later_arg_only_is_direct() {
+        assert_eq!(
+            classify_command(&args(&["python", "-c", "a>b"])),
+            CommandKind::Direct
+        );
+    }
+
+    #[test]
+    fn classify_builtin_is_shell_builtin() {
+        assert_eq!(
+            classify_command(&args(&["echo"])),
+            CommandKind::ShellBuiltin
+        );
+    }
+
+    #[test]
+    fn classify_builtin_case_insensitive() {
+        assert_eq!(
+            classify_command(&args(&["ECHO"])),
+            CommandKind::ShellBuiltin
+        );
+    }
+
+    #[test]
+    fn classify_builtin_with_args_is_shell_builtin() {
+        assert_eq!(
+            classify_command(&args(&["echo", "hello"])),
+            CommandKind::ShellBuiltin
+        );
+    }
+
+    #[test]
+    fn classify_env_var_in_first_arg_is_shell_builtin() {
+        assert_eq!(
+            classify_command(&args(&["%USERPROFILE%\\foo.txt"])),
+            CommandKind::ShellBuiltin
+        );
+    }
+
+    #[test]
+    fn classify_env_var_in_later_arg_is_shell_builtin() {
+        assert_eq!(
+            classify_command(&args(&["notepad", "%USERPROFILE%\\foo.txt"])),
+            CommandKind::ShellBuiltin
+        );
+    }
+
+    #[test]
+    fn classify_literal_percent_not_env_var_is_direct() {
+        assert_eq!(
+            classify_command(&args(&["python", "-c", "print('%s')"])),
+            CommandKind::Direct
+        );
+    }
+
+    // ── contains_env_var ────────────────────────────────────────────
+
+    #[test]
+    fn env_var_standard() {
+        assert!(contains_env_var("%USERPROFILE%"));
+    }
+
+    #[test]
+    fn env_var_with_parentheses() {
+        assert!(contains_env_var("%ProgramFiles(x86)%"));
+    }
+
+    #[test]
+    fn env_var_short_name() {
+        assert!(contains_env_var("%PATH%"));
+    }
+
+    #[test]
+    fn env_var_embedded_in_path() {
+        assert!(contains_env_var("C:\\%USERPROFILE%\\docs"));
+    }
+
+    #[test]
+    fn no_env_var_format_string() {
+        assert!(!contains_env_var("hello %s"));
+    }
+
+    #[test]
+    fn no_env_var_escaped_percent() {
+        assert!(!contains_env_var("100%%"));
+    }
+
+    #[test]
+    fn no_env_var_url_encoding() {
+        assert!(!contains_env_var("hello%20world"));
+    }
+
+    #[test]
+    fn env_var_after_escaped_percent() {
+        assert!(contains_env_var("%%PATH%%"));
+    }
+
+    #[test]
+    fn no_env_var_empty_string() {
+        assert!(!contains_env_var(""));
+    }
 }
