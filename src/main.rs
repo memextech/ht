@@ -52,6 +52,37 @@ enum CommandKind {
     ShellBuiltin, // cmd.exe internal command — escape args, inject into cmd.exe
 }
 
+/// Returns `true` if `s` contains a `%NAME%` environment-variable token
+/// (one or more alphanumeric/underscore characters between two `%` signs).
+/// Single `%` (format strings like `%s`), `%%` (escaped percent), and
+/// URL encodings like `%20` (digits only, no closing `%`) are not matched.
+#[cfg(windows)]
+fn contains_env_var(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let start = i + 1;
+            if start < bytes.len() && (bytes[start].is_ascii_alphanumeric() || bytes[start] == b'_')
+            {
+                let mut j = start + 1;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'%' {
+                    return true;
+                }
+                i = j;
+            } else {
+                i = start;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 #[cfg(windows)]
 fn classify_command(args: &[String]) -> CommandKind {
     let first = match args.first() {
@@ -59,15 +90,16 @@ fn classify_command(args: &[String]) -> CommandKind {
         None => return CommandKind::Direct, // empty → default shell
     };
 
-    // Shell metacharacters in the first argument indicate the user passed
-    // a shell command string (e.g. ht "dir | findstr foo").
-    // Metacharacters in subsequent arguments are literal program arguments
+    // Pipe/redirect/chaining metacharacters in the first argument indicate the
+    // user passed a shell command string (e.g. ht "dir | findstr foo").
+    // These in subsequent arguments are literal program arguments
     // (e.g. ht -- python -c "print('<tag>')") and must not trigger shell mode.
-    if first.contains(['|', '>', '<', '&', '^', '%']) {
+    if first.contains(['|', '>', '<', '&', '^']) {
         return CommandKind::ShellSyntax;
     }
 
-    // cmd.exe internal commands (case-insensitive)
+    // cmd.exe internal commands (case-insensitive) — checked before the %
+    // scan so builtins keep their argument escaping via ShellBuiltin.
     const BUILTINS: &[&str] = &[
         "assoc", "break", "call", "cd", "chdir", "cls", "color", "copy", "date", "del", "dir",
         "echo", "endlocal", "erase", "exit", "for", "ftype", "goto", "if", "md", "mkdir", "mklink",
@@ -76,6 +108,13 @@ fn classify_command(args: &[String]) -> CommandKind {
     ];
     if BUILTINS.contains(&first.as_str()) {
         return CommandKind::ShellBuiltin;
+    }
+
+    // %VAR% environment-variable tokens require cmd.exe for expansion and can
+    // appear in any argument position (e.g. ht notepad %USERPROFILE%\foo.txt),
+    // so scan the entire argument list.
+    if args.iter().any(|a| contains_env_var(a)) {
+        return CommandKind::ShellSyntax;
     }
 
     CommandKind::Direct
