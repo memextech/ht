@@ -67,7 +67,7 @@ fn start_pty(
             pty::CommandKind::Direct => {
                 let cmd = command
                     .iter()
-                    .map(pty::escape_arg)
+                    .map(|s| pty::escape_arg(s))
                     .collect::<Vec<_>>()
                     .join(" ");
                 eprintln!("launching \"{}\" in terminal of size {}", cmd, size);
@@ -86,7 +86,7 @@ fn start_pty(
             pty::CommandKind::ShellBuiltin => {
                 let user_cmd = command
                     .iter()
-                    .map(pty::escape_arg)
+                    .map(|s| pty::escape_arg(s))
                     .collect::<Vec<_>>()
                     .join(" ");
                 eprintln!(
