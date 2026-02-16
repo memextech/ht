@@ -43,10 +43,18 @@ fi
 echo "✓ Version command works: $version_output"
 
 # Test 4: Test that binary can start with a simple command
-if timeout 5 "$BINARY_PATH" echo "test" >/dev/null 2>&1; then
-    echo "✓ Binary can execute simple commands"
+if command -v timeout >/dev/null 2>&1; then
+    if timeout 5 "$BINARY_PATH" echo "test" >/dev/null 2>&1; then
+        echo "✓ Binary can execute simple commands"
+    else
+        echo "⚠️  Binary execution test timed out (this might be expected)"
+    fi
 else
-    echo "⚠️  Binary execution test timed out (this might be expected)"
+    if perl -e 'alarm 5; exec @ARGV' -- "$BINARY_PATH" echo "test" >/dev/null 2>&1; then
+        echo "✓ Binary can execute simple commands"
+    else
+        echo "⚠️  Binary execution test timed out (this might be expected)"
+    fi
 fi
 
 # Test 5: Check binary dependencies (on Linux)

@@ -58,13 +58,12 @@ fn classify_command(args: &[String]) -> CommandKind {
         None => return CommandKind::Direct, // empty → default shell
     };
 
-    // Shell metacharacters inside any argument — the user intentionally
-    // passed a pipeline or redirect string (e.g. ht "dir | findstr foo"
-    // or ht -- dir ^| findstr foo). These need cmd.exe to interpret.
-    for arg in args {
-        if arg.contains(['|', '>', '<', '&', '^', '(', ')']) {
-            return CommandKind::NeedsShell;
-        }
+    // Shell metacharacters in the first argument indicate the user passed
+    // a shell command string (e.g. ht "dir | findstr foo").
+    // Metacharacters in subsequent arguments are literal program arguments
+    // (e.g. ht -- python -c "print('<tag>')") and must not trigger shell mode.
+    if first.contains(['|', '>', '<', '&', '^', '(', ')']) {
+        return CommandKind::NeedsShell;
     }
 
     // cmd.exe internal commands (case-insensitive)
