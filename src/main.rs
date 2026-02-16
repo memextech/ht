@@ -117,9 +117,10 @@ fn classify_command(args: &[String]) -> CommandKind {
 
     // %VAR% environment-variable tokens require cmd.exe for expansion and can
     // appear in any argument position (e.g. ht notepad %USERPROFILE%\foo.txt),
-    // so scan the entire argument list.
+    // so scan the entire argument list. Uses ShellBuiltin (not ShellSyntax) to
+    // preserve argument escaping — cmd.exe expands %VAR% inside double quotes.
     if args.iter().any(|a| contains_env_var(a)) {
-        return CommandKind::ShellSyntax;
+        return CommandKind::ShellBuiltin;
     }
 
     CommandKind::Direct
