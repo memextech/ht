@@ -53,7 +53,8 @@ enum CommandKind {
 }
 
 /// Returns `true` if `s` contains a `%NAME%` environment-variable token
-/// (one or more alphanumeric/underscore characters between two `%` signs).
+/// (one or more alphanumeric, underscore, or parenthesis characters between
+/// two `%` signs — e.g. `%USERPROFILE%`, `%ProgramFiles(x86)%`).
 /// Single `%` (format strings like `%s`), `%%` (escaped percent), and
 /// URL encodings like `%20` (digits only, no closing `%`) are not matched.
 #[cfg(windows)]
@@ -63,10 +64,14 @@ fn contains_env_var(s: &str) -> bool {
     while i < bytes.len() {
         if bytes[i] == b'%' {
             let start = i + 1;
-            if start < bytes.len() && (bytes[start].is_ascii_alphanumeric() || bytes[start] == b'_')
+            if start < bytes.len()
+                && (bytes[start].is_ascii_alphanumeric()
+                    || matches!(bytes[start], b'_' | b'(' | b')'))
             {
                 let mut j = start + 1;
-                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                while j < bytes.len()
+                    && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'_' | b'(' | b')'))
+                {
                     j += 1;
                 }
                 if j < bytes.len() && bytes[j] == b'%' {
