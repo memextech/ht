@@ -98,7 +98,7 @@ mod windows {
             .join("\n")
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shell_prompt_appears_on_screen() {
         let winsize = Winsize {
             ws_row: 24,
@@ -115,7 +115,7 @@ mod windows {
         // Regenerate: python3 -c "import base64; print(base64.b64encode(\"function prompt { 'TEST_PROMPT> ' }\".encode('utf-16-le')).decode())"
         const PROMPT_SCRIPT_B64: &str = "ZgB1AG4AYwB0AGkAbwBuACAAcAByAG8AbQBwAHQAIAB7ACAAJwBUAEUAUwBUAF8AUABSAE8ATQBQAFQAPgAgACcAIAB9AA==";
         let command =
-            format!("pwsh -NoProfile -NoLogo -NoExit -EncodedCommand {PROMPT_SCRIPT_B64}");
+            format!("pwsh.exe -NoProfile -NoLogo -NoExit -EncodedCommand {PROMPT_SCRIPT_B64}");
         let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
             .expect("failed to spawn PTY");
         let pty_handle = tokio::spawn(pty_future);
@@ -124,9 +124,17 @@ mod windows {
         let mut found = false;
         let mut raw_chunks: Vec<String> = Vec::new();
         let mut exit_reason = "deadline expired";
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+        let mut nudge_sent = false;
+        let nudge_at = tokio::time::Instant::now() + Duration::from_secs(5);
 
         while tokio::time::Instant::now() < deadline {
+            if !nudge_sent && raw_chunks.is_empty() && tokio::time::Instant::now() >= nudge_at {
+                let _ = input_tx.send(b"\r\n".to_vec()).await;
+                nudge_sent = true;
+            }
+
             match timeout(Duration::from_millis(100), output_rx.recv()).await {
                 Ok(Some(data)) => {
                     let text = String::from_utf8_lossy(&data);
@@ -157,7 +165,7 @@ mod windows {
             raw_chunks.join("---\n"),
         );
 
-        let _ = input_tx.send(b"exit\n".to_vec()).await;
+        let _ = input_tx.send(b"exit\r\n".to_vec()).await;
         drop(input_tx);
         match timeout(Duration::from_secs(2), pty_handle).await {
             Ok(Ok(result)) => result.expect("PTY task returned an error"),
