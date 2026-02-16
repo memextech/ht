@@ -58,7 +58,7 @@ mod windows_integration {
     #[test]
     fn test_windows_basic_command() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "echo hello"])
+            .args(["run", "--", "echo hello"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -73,7 +73,7 @@ mod windows_integration {
     #[test]
     fn test_windows_cmd() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "cmd", "/c", "echo", "windows-test"])
+            .args(["run", "--", "cmd", "/c", "echo", "windows-test"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -86,7 +86,7 @@ mod windows_integration {
     #[test]
     fn test_windows_powershell() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "powershell", "-Command", "Get-Location"])
+            .args(["run", "--", "powershell", "-Command", "Get-Location"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -99,7 +99,7 @@ mod windows_integration {
     #[test]
     fn test_windows_dir_command() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "dir"])
+            .args(["run", "--", "dir"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -112,7 +112,7 @@ mod windows_integration {
     #[test]
     fn test_windows_batch_execution() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "cmd", "/c", "echo %USERNAME%"])
+            .args(["run", "--", "cmd", "/c", "echo %USERNAME%"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -125,7 +125,7 @@ mod windows_integration {
     #[test]
     fn test_windows_paths() {
         let output = Command::new("cargo")
-            .args(&["run", "--", "cmd", "/c", "cd /d C:\\ && echo %CD%"])
+            .args(["run", "--", "cmd", "/c", "cd /d C:\\ && echo %CD%"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -142,7 +142,7 @@ mod windows_integration {
     fn test_windows_interactive_session() {
         // Test that we can start an interactive cmd session
         let mut child = Command::new("cargo")
-            .args(&["run", "--", "--size", "80x24"])
+            .args(["run", "--", "--size", "80x24"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -163,7 +163,7 @@ mod windows_integration {
     #[test]
     fn test_windows_process_cleanup() {
         let mut child = Command::new("cargo")
-            .args(&["run", "--", "timeout", "/t", "10"])
+            .args(["run", "--", "timeout", "/t", "10"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

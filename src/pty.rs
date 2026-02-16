@@ -268,7 +268,10 @@ struct ConPty {
 }
 
 #[cfg(windows)]
-// Safety: ConPty's HPCON is an opaque Windows handle, safe to use from any thread.
+// Safety: The only non-Send field is HPCON (wraps isize; the windows crate
+// does not impl Send for it). Windows console handles are plain integer tokens
+// that are safe to use from any thread. All other fields (OwnedHandle, Vec<u8>)
+// are already Send.
 unsafe impl Send for ConPty {}
 
 #[cfg(windows)]
@@ -520,7 +523,6 @@ impl ConPty {
         });
 
         // Spawn read thread — takes ownership of output_read
-        let output_tx_clone = output_tx.clone();
         let mut read_handle = tokio::task::spawn_blocking(move || {
             let raw = HANDLE(output_read.as_raw_handle());
             let mut buf = vec![0u8; READ_BUF_SIZE];
@@ -531,7 +533,7 @@ impl ConPty {
                     break;
                 }
                 let data = buf[..bytes_read as usize].to_vec();
-                if output_tx_clone.blocking_send(data).is_err() {
+                if output_tx.blocking_send(data).is_err() {
                     break;
                 }
             }
@@ -593,12 +595,21 @@ impl ConPty {
         //    and signals the child process to exit (unblocking the wait thread).
         let hpc_send = SendHandle::from_hpcon(self.hpc);
         if !hpc_send.is_null() {
-            tokio::task::spawn_blocking(move || unsafe {
+            match tokio::task::spawn_blocking(move || unsafe {
                 ClosePseudoConsole(hpc_send.to_hpcon());
             })
-            .await?;
-            // Mark as consumed so Drop doesn't call it again
-            self.hpc = HPCON(0);
+            .await
+            {
+                Ok(()) => {
+                    // ClosePseudoConsole ran; prevent Drop from double-closing.
+                    self.hpc = HPCON(0);
+                }
+                Err(join_err) => {
+                    // Task panicked or was cancelled before ClosePseudoConsole ran.
+                    // Leave self.hpc non-zero so Drop will close it.
+                    return Err(join_err.into());
+                }
+            }
         }
 
         // 3. Wait for child to exit or kill it.
