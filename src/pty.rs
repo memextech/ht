@@ -314,7 +314,7 @@ impl Drop for ConPty {
 /// Escapes a single argument for a Windows command line following msvcrt conventions.
 /// This replicates the logic from std::sys::windows::args::append_arg.
 #[cfg(any(windows, test))]
-pub(crate) fn escape_arg(arg: &str) -> String {
+pub fn escape_arg(arg: &str) -> String {
     if arg.is_empty() {
         return "\"\"".to_string();
     }
@@ -356,7 +356,7 @@ pub(crate) fn escape_arg(arg: &str) -> String {
 
 #[cfg(any(windows, test))]
 #[derive(Debug, PartialEq)]
-pub(crate) enum CommandKind {
+pub enum CommandKind {
     Direct,       // executable — launch directly
     ShellSyntax,  // metacharacters — inject raw into cmd.exe
     ShellBuiltin, // cmd.exe internal command — escape args, inject into cmd.exe
@@ -397,7 +397,7 @@ fn contains_env_var(s: &str) -> bool {
 }
 
 #[cfg(any(windows, test))]
-pub(crate) fn classify_command(args: &[String]) -> CommandKind {
+pub fn classify_command(args: &[String]) -> CommandKind {
     let original_first = match args.first() {
         Some(s) => s,
         None => return CommandKind::Direct, // empty → default shell

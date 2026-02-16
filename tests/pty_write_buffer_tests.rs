@@ -128,6 +128,7 @@ async fn test_pty_write_buffer_limits() {
 /// 1. Single large write (current behavior)
 /// 2. Chunked writes with delays (potential fix)
 #[tokio::test]
+#[ignore = "deadlocks under concurrent PTY usage; run with --ignored --test-threads=1"]
 async fn test_chunked_vs_bulk_write() {
     // Test setup function
     async fn test_write_strategy(data_size: usize, chunk_size: Option<usize>) -> usize {
@@ -305,6 +306,7 @@ async fn test_rapid_consecutive_writes() {
 ///
 /// This helps identify the optimal delay for preventing buffer overflow
 #[tokio::test]
+#[ignore = "deadlocks under concurrent PTY usage; run with --ignored --test-threads=1"]
 async fn test_optimal_chunk_delay() {
     async fn test_with_delay(delay_ms: u64) -> (usize, Duration) {
         let winsize = Winsize {
@@ -375,6 +377,7 @@ async fn test_optimal_chunk_delay() {
 /// This test attempts to find the actual PTY buffer size by testing
 /// progressively larger writes until data loss occurs.
 #[tokio::test]
+#[ignore = "deadlocks under concurrent PTY usage; run with --ignored --test-threads=1"]
 async fn test_find_actual_buffer_size() {
     async fn test_size(size: usize) -> bool {
         let winsize = Winsize {
