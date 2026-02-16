@@ -63,7 +63,7 @@ fn classify_command(args: &[String]) -> CommandKind {
     // a shell command string (e.g. ht "dir | findstr foo").
     // Metacharacters in subsequent arguments are literal program arguments
     // (e.g. ht -- python -c "print('<tag>')") and must not trigger shell mode.
-    if first.contains(['|', '>', '<', '&', '^', '(', ')']) {
+    if first.contains(['|', '>', '<', '&', '^']) {
         return CommandKind::ShellSyntax;
     }
 
