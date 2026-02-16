@@ -460,15 +460,22 @@ impl ConPty {
     fn new(winsize: Winsize, command: &str) -> Result<Self> {
         unsafe {
             // 1. Create pipe pairs — wrap each end immediately
-            let (mut input_read_raw, mut input_write_raw) = (HANDLE::default(), HANDLE::default());
-            let (mut output_read_raw, mut output_write_raw) =
-                (HANDLE::default(), HANDLE::default());
-            CreatePipe(&mut input_read_raw, &mut input_write_raw, None, 0)?;
-            let input_read = OwnedHandle::from_raw_handle(input_read_raw.0 as *mut _);
-            let input_write = OwnedHandle::from_raw_handle(input_write_raw.0 as *mut _);
-            CreatePipe(&mut output_read_raw, &mut output_write_raw, None, 0)?;
-            let output_read = OwnedHandle::from_raw_handle(output_read_raw.0 as *mut _);
-            let output_write = OwnedHandle::from_raw_handle(output_write_raw.0 as *mut _);
+            let (input_read, input_write) = {
+                let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
+                CreatePipe(&mut read_raw, &mut write_raw, None, 0)?;
+                (
+                    OwnedHandle::from_raw_handle(read_raw.0 as *mut _),
+                    OwnedHandle::from_raw_handle(write_raw.0 as *mut _),
+                )
+            };
+            let (output_read, output_write) = {
+                let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
+                CreatePipe(&mut read_raw, &mut write_raw, None, 0)?;
+                (
+                    OwnedHandle::from_raw_handle(read_raw.0 as *mut _),
+                    OwnedHandle::from_raw_handle(write_raw.0 as *mut _),
+                )
+            };
 
             // 2. Create pseudo-console
             let size = COORD {
@@ -526,16 +533,11 @@ impl ConPty {
             si_ex.lpAttributeList = attr_list;
 
             // 7. Build command line + CreateProcessW
-            debug_assert!(
+            assert!(
                 !command.is_empty(),
                 "command should not be empty; caller provides a default"
             );
-            let cmd_str = if command.is_empty() {
-                "cmd.exe".to_string()
-            } else {
-                command.to_string()
-            };
-            let mut cmd_wide: Vec<u16> = cmd_str
+            let mut cmd_wide: Vec<u16> = command
                 .encode_utf16()
                 .chain(std::iter::once(0u16))
                 .collect();
