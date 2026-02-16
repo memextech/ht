@@ -104,7 +104,7 @@ fn classify_command(args: &[String]) -> CommandKind {
     // (e.g. "C:\Program Files\foo.exe") and stay in the normal flow.
     if args.len() == 1 {
         if let Some(cmd_token) = first.split(' ').next() {
-            if cmd_token != first && !cmd_token.contains('\\') {
+            if cmd_token != first && !cmd_token.contains('\\') && !cmd_token.contains('/') {
                 return CommandKind::ShellSyntax;
             }
         }
@@ -163,7 +163,7 @@ fn start_pty(
             CommandKind::Direct => {
                 let cmd = command
                     .iter()
-                    .map(|a| pty::escape_arg(a))
+                    .map(pty::escape_arg)
                     .collect::<Vec<_>>()
                     .join(" ");
                 eprintln!("launching \"{}\" in terminal of size {}", cmd, size);
@@ -182,7 +182,7 @@ fn start_pty(
             CommandKind::ShellBuiltin => {
                 let user_cmd = command
                     .iter()
-                    .map(|a| pty::escape_arg(a))
+                    .map(pty::escape_arg)
                     .collect::<Vec<_>>()
                     .join(" ");
                 eprintln!(
@@ -347,6 +347,14 @@ mod tests {
     fn classify_single_string_relative_path_with_spaces_is_direct() {
         assert_eq!(
             classify_command(&args(&[".\\my app\\foo.exe"])),
+            CommandKind::Direct
+        );
+    }
+
+    #[test]
+    fn classify_single_string_forward_slash_path_is_direct() {
+        assert_eq!(
+            classify_command(&args(&["C:/Program Files/foo.exe"])),
             CommandKind::Direct
         );
     }

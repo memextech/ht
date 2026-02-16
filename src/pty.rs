@@ -107,6 +107,7 @@ pub fn spawn(
     winsize: Winsize,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
+    // TODO: implement resize on Unix by consuming resize_rx and calling TIOCSWINSZ on the master fd
     _resize_rx: mpsc::Receiver<(u16, u16)>,
     initial_input: Option<Vec<u8>>,
 ) -> Result<impl Future<Output = Result<()>>> {
@@ -424,6 +425,7 @@ impl ConPty {
             si_ex.lpAttributeList = attr_list;
 
             // 7. Build command line + CreateProcessW
+            debug_assert!(!command.is_empty(), "command should not be empty; caller provides a default");
             let cmd_str = if command.is_empty() {
                 "cmd.exe".to_string()
             } else {
@@ -490,7 +492,7 @@ impl ConPty {
                     let mut written: u32 = 0;
                     let ok =
                         unsafe { WriteFile(raw, Some(&data[offset..]), Some(&mut written), None) };
-                    if ok.is_err() {
+                    if ok.is_err() || written == 0 {
                         return Some(input_write);
                     }
                     offset += written as usize;
@@ -506,8 +508,8 @@ impl ConPty {
                             let ok = unsafe {
                                 WriteFile(raw, Some(&data[offset..]), Some(&mut written), None)
                             };
-                            if ok.is_err() {
-                                // WriteFile failed — return ownership for cleanup
+                            if ok.is_err() || written == 0 {
+                                // WriteFile failed or pipe closed — return ownership for cleanup
                                 return Some(input_write);
                             }
                             offset += written as usize;
