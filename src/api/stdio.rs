@@ -133,7 +133,7 @@ async fn send_command_with_chunking(
 
                 let mut chunk: Vec<InputSeq> = Vec::new();
                 let mut chunk_size: usize = 0;
-                let mut chunk_index: usize = 0;
+                let mut chunks_sent: usize = 0;
 
                 for seq in seqs {
                     let seq_size = seq_byte_size(&seq);
@@ -151,7 +151,7 @@ async fn send_command_with_chunking(
                                 ))
                                 .await;
                                 chunk_size = 0;
-                                chunk_index += 1;
+                                chunks_sent += 1;
                             }
 
                             // Split the large string on UTF-8 character boundaries
@@ -176,7 +176,7 @@ async fn send_command_with_chunking(
                                     ))
                                     .await;
                                 }
-                                chunk_index += 1;
+                                chunks_sent += 1;
                             }
                             continue;
                         }
@@ -190,7 +190,7 @@ async fn send_command_with_chunking(
                         tokio::time::sleep(tokio::time::Duration::from_millis(CHUNK_DELAY_MS))
                             .await;
                         chunk_size = 0;
-                        chunk_index += 1;
+                        chunks_sent += 1;
                     }
 
                     chunk_size += seq_size;
@@ -200,10 +200,10 @@ async fn send_command_with_chunking(
                 // Send remaining chunk
                 if !chunk.is_empty() {
                     command_tx.send(Command::Input(chunk)).await?;
-                    chunk_index += 1;
+                    chunks_sent += 1;
                 }
 
-                eprintln!("Large input sent successfully in {} chunks", chunk_index);
+                eprintln!("Large input sent successfully in {} chunks", chunks_sent);
             }
         }
         // Other command types pass through directly

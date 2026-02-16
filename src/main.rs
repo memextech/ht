@@ -65,9 +65,7 @@ fn contains_env_var(s: &str) -> bool {
     while i < bytes.len() {
         if bytes[i] == b'%' {
             let start = i + 1;
-            if start < bytes.len()
-                && (bytes[start].is_ascii_alphanumeric()
-                    || matches!(bytes[start], b'_' | b'(' | b')'))
+            if start < bytes.len() && (bytes[start].is_ascii_alphanumeric() || bytes[start] == b'_')
             {
                 let mut j = start + 1;
                 while j < bytes.len()
@@ -91,10 +89,11 @@ fn contains_env_var(s: &str) -> bool {
 
 #[cfg(any(windows, test))]
 fn classify_command(args: &[String]) -> CommandKind {
-    let first = match args.first() {
-        Some(s) => s.to_ascii_lowercase(),
+    let original_first = match args.first() {
+        Some(s) => s,
         None => return CommandKind::Direct, // empty → default shell
     };
+    let first = original_first.to_ascii_lowercase();
 
     // Single-string command line: e.g. ht "echo hello" arrives as
     // args = ["echo hello"]. When the first whitespace-delimited token
@@ -102,6 +101,12 @@ fn classify_command(args: &[String]) -> CommandKind {
     // user intended the whole string as a shell command line.  Strings
     // whose first token contains '\' are paths with spaces
     // (e.g. "C:\Program Files\foo.exe") and stay in the normal flow.
+    //
+    // Trade-off: this means ht "cmd.exe /k ..." or ht "notepad.exe file.txt"
+    // routes through cmd.exe (creating a nested shell layer) rather than
+    // launching the executable directly. Distinguishing "exe name + args"
+    // from "shell command line" would require PATH lookups or extension
+    // checks, so we accept the extra shell layer for correctness.
     if args.len() == 1 {
         if let Some(cmd_token) = first.split(' ').next() {
             if cmd_token != first && !cmd_token.contains('\\') && !cmd_token.contains('/') {
@@ -114,7 +119,7 @@ fn classify_command(args: &[String]) -> CommandKind {
     // user passed a shell command string (e.g. ht "dir | findstr foo").
     // These in subsequent arguments are literal program arguments
     // (e.g. ht -- python -c "print('<tag>')") and must not trigger shell mode.
-    if first.contains(['|', '>', '<', '&', '^']) {
+    if original_first.contains(['|', '>', '<', '&', '^']) {
         return CommandKind::ShellSyntax;
     }
 
@@ -373,6 +378,11 @@ mod tests {
     }
 
     #[test]
+    fn classify_metachar_mixed_case_is_shell_syntax() {
+        assert_eq!(classify_command(&args(&["A|B"])), CommandKind::ShellSyntax);
+    }
+
+    #[test]
     fn classify_metachar_in_later_arg_only_is_direct() {
         assert_eq!(
             classify_command(&args(&["python", "-c", "a>b"])),
@@ -473,5 +483,10 @@ mod tests {
     #[test]
     fn no_env_var_empty_string() {
         assert!(!contains_env_var(""));
+    }
+
+    #[test]
+    fn no_env_var_paren_at_start() {
+        assert!(!contains_env_var("%(x86)%"));
     }
 }

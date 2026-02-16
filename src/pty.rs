@@ -314,7 +314,7 @@ impl Drop for ConPty {
 /// Escapes a single argument for a Windows command line following msvcrt conventions.
 /// This replicates the logic from std::sys::windows::args::append_arg.
 #[cfg(windows)]
-pub fn escape_arg(arg: &str) -> String {
+pub(crate) fn escape_arg(arg: &str) -> String {
     if arg.is_empty() {
         return "\"\"".to_string();
     }
@@ -425,7 +425,10 @@ impl ConPty {
             si_ex.lpAttributeList = attr_list;
 
             // 7. Build command line + CreateProcessW
-            debug_assert!(!command.is_empty(), "command should not be empty; caller provides a default");
+            debug_assert!(
+                !command.is_empty(),
+                "command should not be empty; caller provides a default"
+            );
             let cmd_str = if command.is_empty() {
                 "cmd.exe".to_string()
             } else {
