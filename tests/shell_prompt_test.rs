@@ -114,8 +114,9 @@ mod windows {
         // base64(utf16le("function prompt { 'TEST_PROMPT> ' }"))
         // Regenerate: python3 -c "import base64; print(base64.b64encode(\"function prompt { 'TEST_PROMPT> ' }\".encode('utf-16-le')).decode())"
         const PROMPT_SCRIPT_B64: &str = "ZgB1AG4AYwB0AGkAbwBuACAAcAByAG8AbQBwAHQAIAB7ACAAJwBUAEUAUwBUAF8AUABSAE8ATQBQAFQAPgAgACcAIAB9AA==";
-        let command =
-            format!("powershell.exe -NoProfile -NoLogo -NoExit -EncodedCommand {PROMPT_SCRIPT_B64}");
+        let command = format!(
+            "powershell.exe -NoProfile -NoLogo -NoExit -EncodedCommand {PROMPT_SCRIPT_B64}"
+        );
         let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
             .expect("failed to spawn PTY");
         let pty_handle = tokio::spawn(pty_future);
