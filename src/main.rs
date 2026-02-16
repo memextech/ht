@@ -110,7 +110,11 @@ fn start_pty(
                 (cmd, None)
             }
             CommandKind::NeedsShell => {
-                let user_cmd = command.join(" ");
+                let user_cmd = command
+                    .iter()
+                    .map(|a| pty::escape_arg(a))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 eprintln!(
                     "launching cmd.exe for shell command \"{}\" \
                      in terminal of size {}",
