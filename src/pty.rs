@@ -314,7 +314,8 @@ impl Drop for ConPty {
 /// Escapes a single argument for a Windows command line following msvcrt conventions.
 /// This replicates the logic from std::sys::windows::args::append_arg.
 #[cfg(any(windows, test))]
-pub fn escape_arg(arg: &str) -> String {
+#[allow(dead_code)]
+pub(crate) fn escape_arg(arg: &str) -> String {
     if arg.is_empty() {
         return "\"\"".to_string();
     }
@@ -356,7 +357,8 @@ pub fn escape_arg(arg: &str) -> String {
 
 #[cfg(any(windows, test))]
 #[derive(Debug, PartialEq)]
-pub enum CommandKind {
+#[allow(dead_code)]
+pub(crate) enum CommandKind {
     Direct,       // executable — launch directly
     ShellSyntax,  // metacharacters — inject raw into cmd.exe
     ShellBuiltin, // cmd.exe internal command — escape args, inject into cmd.exe
@@ -397,7 +399,8 @@ fn contains_env_var(s: &str) -> bool {
 }
 
 #[cfg(any(windows, test))]
-pub fn classify_command(args: &[String]) -> CommandKind {
+#[allow(dead_code)]
+pub(crate) fn classify_command(args: &[String]) -> CommandKind {
     let original_first = match args.first() {
         Some(s) => s,
         None => return CommandKind::Direct, // empty → default shell
@@ -458,65 +461,73 @@ pub fn classify_command(args: &[String]) -> CommandKind {
 #[cfg(windows)]
 impl ConPty {
     fn new(winsize: Winsize, command: &str) -> Result<Self> {
-        unsafe {
-            // 1. Create pipe pairs — wrap each end immediately
-            let (input_read, input_write) = {
-                let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
-                CreatePipe(&mut read_raw, &mut write_raw, None, 0)?;
+        // 1. Create pipe pairs — wrap each end immediately in OwnedHandle
+        let (input_read, input_write) = {
+            let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
+            unsafe { CreatePipe(&mut read_raw, &mut write_raw, None, 0) }?;
+            unsafe {
                 (
                     OwnedHandle::from_raw_handle(read_raw.0 as *mut _),
                     OwnedHandle::from_raw_handle(write_raw.0 as *mut _),
                 )
-            };
-            let (output_read, output_write) = {
-                let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
-                CreatePipe(&mut read_raw, &mut write_raw, None, 0)?;
+            }
+        };
+        let (output_read, output_write) = {
+            let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
+            unsafe { CreatePipe(&mut read_raw, &mut write_raw, None, 0) }?;
+            unsafe {
                 (
                     OwnedHandle::from_raw_handle(read_raw.0 as *mut _),
                     OwnedHandle::from_raw_handle(write_raw.0 as *mut _),
                 )
-            };
+            }
+        };
 
-            // 2. Create pseudo-console
-            let size = COORD {
-                X: winsize.ws_col.min(i16::MAX as u16) as i16,
-                Y: winsize.ws_row.min(i16::MAX as u16) as i16,
-            };
-            let hpc = CreatePseudoConsole(
+        // 2. Create pseudo-console
+        let size = COORD {
+            X: winsize.ws_col.min(i16::MAX as u16) as i16,
+            Y: winsize.ws_row.min(i16::MAX as u16) as i16,
+        };
+        let hpc = unsafe {
+            CreatePseudoConsole(
                 size,
                 HANDLE(input_read.as_raw_handle()),
                 HANDLE(output_write.as_raw_handle()),
                 0,
-            )?;
+            )
+        }?;
 
-            // 3. Close pipe ends given to ConPTY (it duplicated them)
-            drop(input_read);
-            drop(output_write);
+        // 3. Close pipe ends given to ConPTY (it duplicated them)
+        drop(input_read);
+        drop(output_write);
 
-            // Build partial ConPty immediately so Drop covers hpc on any later failure
-            let mut conpty = ConPty {
-                hpc,
-                input_write: Some(input_write),
-                output_read: Some(output_read),
-                proc_handle: None,
-                thread_handle: None,
-                attr_list_buf: vec![],
-            };
+        // Build partial ConPty immediately so Drop covers hpc on any later failure
+        let mut conpty = ConPty {
+            hpc,
+            input_write: Some(input_write),
+            output_read: Some(output_read),
+            proc_handle: None,
+            thread_handle: None,
+            attr_list_buf: vec![],
+        };
 
-            // 4. Initialize proc thread attribute list (two-call pattern)
-            let mut attr_list_size: usize = 0;
-            let _ = InitializeProcThreadAttributeList(
+        // 4. Initialize proc thread attribute list (two-call pattern)
+        let mut attr_list_size: usize = 0;
+        let _ = unsafe {
+            InitializeProcThreadAttributeList(
                 LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
                 1,
                 0,
                 &mut attr_list_size,
-            );
-            conpty.attr_list_buf = vec![0u8; attr_list_size];
-            let attr_list =
-                LPPROC_THREAD_ATTRIBUTE_LIST(conpty.attr_list_buf.as_mut_ptr() as *mut c_void);
-            InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size)?;
+            )
+        };
+        conpty.attr_list_buf = vec![0u8; attr_list_size];
+        let attr_list =
+            LPPROC_THREAD_ATTRIBUTE_LIST(conpty.attr_list_buf.as_mut_ptr() as *mut c_void);
+        unsafe { InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size) }?;
 
-            // 5. Wire hpc into the attribute list
+        // 5. Wire hpc into the attribute list
+        unsafe {
             UpdateProcThreadAttribute(
                 attr_list,
                 0,
@@ -525,26 +536,28 @@ impl ConPty {
                 size_of::<HPCON>(),
                 None,
                 None,
-            )?;
+            )
+        }?;
 
-            // 6. Build STARTUPINFOEXW referencing the attribute list
-            let mut si_ex: STARTUPINFOEXW = zeroed();
-            si_ex.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-            si_ex.lpAttributeList = attr_list;
+        // 6. Build STARTUPINFOEXW referencing the attribute list
+        let mut si_ex: STARTUPINFOEXW = unsafe { zeroed() };
+        si_ex.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        si_ex.lpAttributeList = attr_list;
 
-            // 7. Build command line + CreateProcessW
-            assert!(
-                !command.is_empty(),
-                "command should not be empty; caller provides a default"
-            );
-            let mut cmd_wide: Vec<u16> = command
-                .encode_utf16()
-                .chain(std::iter::once(0u16))
-                .collect();
-            let cmd_pwstr = PWSTR(cmd_wide.as_mut_ptr());
+        // 7. Build command line + CreateProcessW
+        assert!(
+            !command.is_empty(),
+            "command should not be empty; caller provides a default"
+        );
+        let mut cmd_wide: Vec<u16> = command
+            .encode_utf16()
+            .chain(std::iter::once(0u16))
+            .collect();
+        let cmd_pwstr = PWSTR(cmd_wide.as_mut_ptr());
 
-            let mut proc_info: PROCESS_INFORMATION = zeroed();
+        let mut proc_info: PROCESS_INFORMATION = unsafe { zeroed() };
 
+        unsafe {
             CreateProcessW(
                 None,
                 cmd_pwstr,
@@ -556,15 +569,16 @@ impl ConPty {
                 None,
                 &si_ex.StartupInfo as *const STARTUPINFOW,
                 &mut proc_info,
-            )?;
+            )
+        }?;
 
-            // 8. Extract process/thread handles from PROCESS_INFORMATION
-            conpty.proc_handle = Some(OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _));
-            conpty.thread_handle =
-                Some(OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _));
+        // 8. Extract process/thread handles from PROCESS_INFORMATION
+        conpty.proc_handle =
+            Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _) });
+        conpty.thread_handle =
+            Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _) });
 
-            Ok(conpty)
-        }
+        Ok(conpty)
     }
 
     async fn drive(
@@ -588,6 +602,9 @@ impl ConPty {
 
         // Spawn write thread — takes ownership of input_write
         let mut write_handle = tokio::task::spawn_blocking(move || -> Option<OwnedHandle> {
+            // Safety: `raw` borrows the underlying handle value from `input_write`.
+            // `input_write` must remain alive for the entire lifetime of `raw`.
+            // It is either returned (Some branch) or explicitly dropped (None branch).
             let raw = HANDLE(input_write.as_raw_handle());
 
             // Inject initial input before relaying user input
@@ -631,6 +648,8 @@ impl ConPty {
 
         // Spawn read thread — takes ownership of output_read
         let mut read_handle = tokio::task::spawn_blocking(move || {
+            // Safety: `raw` borrows the underlying handle value from `output_read`.
+            // `output_read` is kept alive until the explicit `drop(output_read)` below.
             let raw = HANDLE(output_read.as_raw_handle());
             let mut buf = vec![0u8; READ_BUF_SIZE];
             loop {
@@ -714,6 +733,11 @@ impl ConPty {
                 Err(join_err) => {
                     // Task panicked or was cancelled before ClosePseudoConsole ran.
                     // Leave self.hpc non-zero so Drop will close it.
+                    // Best-effort cleanup: await remaining blocking threads
+                    // to prevent them from outliving the dropped handles.
+                    let _ = write_handle.await;
+                    let _ = read_handle.await;
+                    let _ = wait_handle.await;
                     return Err(join_err.into());
                 }
             }

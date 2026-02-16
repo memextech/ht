@@ -218,6 +218,9 @@ async fn send_command_with_chunking(
 fn seq_byte_size(seq: &InputSeq) -> usize {
     match seq {
         InputSeq::Standard(s) => s.len(),
+        // Only measures the normal-mode sequence; the application-mode
+        // alternative (s2) is typically the same length.  Cursor escapes
+        // are small (a few bytes each) so any undercount won't exceed CHUNK_SIZE.
         InputSeq::Cursor(s1, _) => s1.len(),
     }
 }
