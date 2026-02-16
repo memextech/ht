@@ -111,12 +111,7 @@ mod windows {
 
         let mut vt = avt::Vt::builder().size(80, 24).resizable(true).build();
 
-        // base64(utf16le("function prompt { 'TEST_PROMPT> ' }"))
-        // Regenerate: python3 -c "import base64; print(base64.b64encode(\"function prompt { 'TEST_PROMPT> ' }\".encode('utf-16-le')).decode())"
-        const PROMPT_SCRIPT_B64: &str = "ZgB1AG4AYwB0AGkAbwBuACAAcAByAG8AbQBwAHQAIAB7ACAAJwBUAEUAUwBUAF8AUABSAE8ATQBQAFQAPgAgACcAIAB9AA==";
-        let command = format!(
-            "powershell.exe -NoProfile -NoLogo -NoExit -EncodedCommand {PROMPT_SCRIPT_B64}"
-        );
+        let command = "cmd.exe /k prompt TEST_PROMPT$G$S".to_string();
         let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
             .expect("failed to spawn PTY");
         let pty_handle = tokio::spawn(pty_future);
@@ -125,17 +120,9 @@ mod windows {
         let mut found = false;
         let mut raw_chunks: Vec<String> = Vec::new();
         let mut exit_reason = "deadline expired";
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-
-        let mut nudge_sent = false;
-        let nudge_at = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
         while tokio::time::Instant::now() < deadline {
-            if !nudge_sent && raw_chunks.is_empty() && tokio::time::Instant::now() >= nudge_at {
-                let _ = input_tx.send(b"\r\n".to_vec()).await;
-                nudge_sent = true;
-            }
-
             match timeout(Duration::from_millis(100), output_rx.recv()).await {
                 Ok(Some(data)) => {
                     let text = String::from_utf8_lossy(&data);
