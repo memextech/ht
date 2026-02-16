@@ -47,8 +47,9 @@ fn start_stdio_api(
 
 #[cfg(windows)]
 enum CommandKind {
-    Direct,     // executable — launch directly
-    NeedsShell, // builtin or metacharacters — use cmd.exe + inject
+    Direct,       // executable — launch directly
+    ShellSyntax,  // metacharacters — inject raw into cmd.exe
+    ShellBuiltin, // cmd.exe internal command — escape args, inject into cmd.exe
 }
 
 #[cfg(windows)]
@@ -63,7 +64,7 @@ fn classify_command(args: &[String]) -> CommandKind {
     // Metacharacters in subsequent arguments are literal program arguments
     // (e.g. ht -- python -c "print('<tag>')") and must not trigger shell mode.
     if first.contains(['|', '>', '<', '&', '^', '(', ')']) {
-        return CommandKind::NeedsShell;
+        return CommandKind::ShellSyntax;
     }
 
     // cmd.exe internal commands (case-insensitive)
@@ -74,7 +75,7 @@ fn classify_command(args: &[String]) -> CommandKind {
         "set", "setlocal", "shift", "start", "time", "title", "type", "ver", "verify", "vol",
     ];
     if BUILTINS.contains(&first.as_str()) {
-        return CommandKind::NeedsShell;
+        return CommandKind::ShellBuiltin;
     }
 
     CommandKind::Direct
@@ -108,19 +109,27 @@ fn start_pty(
                 eprintln!("launching \"{}\" in terminal of size {}", cmd, size);
                 (cmd, None)
             }
-            CommandKind::NeedsShell => {
+            CommandKind::ShellSyntax => {
+                let user_cmd = command.join(" ");
+                eprintln!(
+                    "launching cmd.exe for shell command \"{}\" \
+                     in terminal of size {}",
+                    user_cmd, size
+                );
+                let inject = format!("{}\r\nexit\r\n", user_cmd);
+                ("cmd.exe".to_string(), Some(inject.into_bytes()))
+            }
+            CommandKind::ShellBuiltin => {
                 let user_cmd = command
                     .iter()
                     .map(|a| pty::escape_arg(a))
                     .collect::<Vec<_>>()
                     .join(" ");
                 eprintln!(
-                    "launching cmd.exe for shell command \"{}\" \
+                    "launching cmd.exe for builtin \"{}\" \
                      in terminal of size {}",
                     user_cmd, size
                 );
-                // Inject command + exit to match cmd.exe /c semantics
-                // (exit after the command finishes, so scripts don't hang)
                 let inject = format!("{}\r\nexit\r\n", user_cmd);
                 ("cmd.exe".to_string(), Some(inject.into_bytes()))
             }
