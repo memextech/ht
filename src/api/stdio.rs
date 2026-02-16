@@ -140,24 +140,33 @@ async fn send_command_with_chunking(
                     }
                 }
 
-                // Send in chunks
-                let bytes = full_input.as_bytes();
-                let num_chunks = bytes.len().div_ceil(CHUNK_SIZE);
+                // Send in chunks, splitting on valid UTF-8 character boundaries
+                let mut remaining = full_input.as_str();
+                let mut chunk_index = 0;
 
-                for (i, chunk) in bytes.chunks(CHUNK_SIZE).enumerate() {
-                    let chunk_str = String::from_utf8_lossy(chunk).to_string();
+                while !remaining.is_empty() {
+                    let end = remaining
+                        .char_indices()
+                        .take_while(|(idx, _)| *idx < CHUNK_SIZE)
+                        .last()
+                        .map(|(idx, ch)| idx + ch.len_utf8())
+                        .unwrap_or(remaining.len());
+                    let chunk_str = &remaining[..end];
+                    remaining = &remaining[end..];
+
                     command_tx
                         .send(Command::Input(vec![standard_key(chunk_str)]))
                         .await?;
 
                     // Add delay between chunks (except after the last one)
-                    if i + 1 < num_chunks {
+                    if !remaining.is_empty() {
                         tokio::time::sleep(tokio::time::Duration::from_millis(CHUNK_DELAY_MS))
                             .await;
                     }
+                    chunk_index += 1;
                 }
 
-                eprintln!("Large input sent successfully in {} chunks", num_chunks);
+                eprintln!("Large input sent successfully in {} chunks", chunk_index);
             }
         }
         // Other command types pass through directly
