@@ -37,7 +37,7 @@ use std::mem::{size_of, zeroed};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
-use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 #[cfg(windows)]
@@ -50,8 +50,8 @@ use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
-    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 #[cfg(windows)]
 use windows::core::PWSTR;
@@ -542,6 +542,14 @@ impl ConPty {
         // 6. Build STARTUPINFOEXW referencing the attribute list
         let mut si_ex: STARTUPINFOEXW = unsafe { zeroed() };
         si_ex.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        // Prevent the parent's redirected handles (pipes) from leaking to the
+        // child.  Without this, Windows Server 2022 (build 20348) propagates the
+        // parent's pipe handles instead of letting ConPTY provide console handles,
+        // causing the child to exit immediately (microsoft/terminal#11276).
+        si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si_ex.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        si_ex.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+        si_ex.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         si_ex.lpAttributeList = attr_list;
 
         // 7. Build command line + CreateProcessW

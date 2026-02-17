@@ -98,10 +98,6 @@ mod windows {
             .join("\n")
     }
 
-    // ConPTY output pipe produces 0 bytes on GitHub Actions windows-latest.
-    // Tested with pwsh.exe, powershell.exe, and cmd.exe — all produce 0 output.
-    // The ConPTY pipes appear non-functional in the CI's non-interactive session.
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shell_prompt_appears_on_screen() {
         let winsize = Winsize {
