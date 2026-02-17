@@ -98,9 +98,10 @@ mod windows {
             .join("\n")
     }
 
-    // ConPTY output pipe produces 0 bytes on GitHub Actions windows-latest.
-    // Tested with pwsh.exe, powershell.exe, and cmd.exe — all produce 0 output.
-    // The ConPTY pipes appear non-functional in the CI's non-interactive session.
+    // ConPTY produces 0 output bytes on GitHub Actions windows-2022.  The
+    // STARTF_USESTDHANDLES fix (pty.rs) addresses handle propagation when the
+    // parent's I/O is redirected, but the CI runner's non-interactive session
+    // hits a separate conhost.exe limitation (microsoft/terminal#13914).
     #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shell_prompt_appears_on_screen() {
