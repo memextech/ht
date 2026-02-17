@@ -2,12 +2,15 @@
 ///
 /// This test validates that the chunking implementation actually prevents
 /// buffer overflow when sending large commands through HT.
-
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::time::Duration;
 
 /// Test that HT with chunking fix can handle large heredocs
+#[cfg(unix)]
 #[test]
 fn test_large_heredoc_with_chunking_fix() {
     println!("\n=== Testing Large Heredoc with Chunking Fix ===\n");
@@ -15,15 +18,12 @@ fn test_large_heredoc_with_chunking_fix() {
     // Build HT first
     println!("Building HT...");
     let build = Command::new("cargo")
-        .args(&["build", "--bin", "ht"])
+        .args(["build", "--bin", "ht"])
         .output()
         .expect("Failed to build HT");
 
     if !build.status.success() {
-        panic!(
-            "Build failed:\n{}",
-            String::from_utf8_lossy(&build.stderr)
-        );
+        panic!("Build failed:\n{}", String::from_utf8_lossy(&build.stderr));
     }
 
     println!("✓ Build successful\n");
@@ -61,6 +61,7 @@ fn test_large_heredoc_with_chunking_fix() {
     println!("✓ Very large heredocs work");
 }
 
+#[cfg(unix)]
 fn test_heredoc_size(ht_binary: &str, size: usize) {
     let content = "x".repeat(size);
     let heredoc_cmd = format!(
@@ -90,39 +91,37 @@ EOF
         .spawn()
         .expect("Failed to spawn HT");
 
-    let stdin = child.stdin.as_mut().expect("Failed to get stdin");
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get stdin");
 
-    // Send the input command
-    stdin
-        .write_all(input_json.as_bytes())
-        .expect("Failed to write to stdin");
-    stdin.write_all(b"\n").expect("Failed to write newline");
+        // Send the input command
+        stdin
+            .write_all(input_json.as_bytes())
+            .expect("Failed to write to stdin");
+        stdin.write_all(b"\n").expect("Failed to write newline");
 
-    // Give it time to process
-    std::thread::sleep(Duration::from_millis(500));
+        // Give it time to process
+        std::thread::sleep(Duration::from_millis(500));
 
-    // Send exit command
-    let exit_json = serde_json::json!({"type": "input", "payload": "exit\n"}).to_string();
-    stdin
-        .write_all(exit_json.as_bytes())
-        .expect("Failed to write exit");
-    stdin.write_all(b"\n").expect("Failed to write newline");
-
-    drop(stdin);
+        // Send exit command
+        let exit_json = serde_json::json!({"type": "input", "payload": "exit\n"}).to_string();
+        stdin
+            .write_all(exit_json.as_bytes())
+            .expect("Failed to write exit");
+        stdin.write_all(b"\n").expect("Failed to write newline");
+    }
+    // Borrow ended; take ownership to actually close stdin
+    drop(child.stdin.take());
 
     // Wait for output with timeout
-    let output = child
-        .wait_with_output()
-        .expect("Failed to wait for output");
+    let output = child.wait_with_output().expect("Failed to wait for output");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Check for chunking message in stderr (for large inputs)
-    if size >= 1500 {
-        if stderr.contains("Large input detected") {
-            println!("  ✓ Chunking activated");
-        }
+    if size >= 1500 && stderr.contains("Large input detected") {
+        println!("  ✓ Chunking activated");
     }
 
     // Parse output events to verify data was received
@@ -215,8 +214,10 @@ EOF
 
     if input_json.len() >= 1500 {
         println!("✓ Large enough to trigger chunking fix");
-        println!("  Without chunking: Would lose ~{}% of data", 
-                 ((input_json.len() - 4096) * 100 / input_json.len()));
+        println!(
+            "  Without chunking: Would lose ~{}% of data",
+            ((input_json.len() - 4096) * 100 / input_json.len())
+        );
         println!("  With chunking: Should work perfectly");
     }
 

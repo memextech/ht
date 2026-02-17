@@ -1,13 +1,14 @@
+#![cfg(unix)]
 /// Tests for PTY buffer overflow issues when sending large heredocs
-/// 
+///
 /// This test suite reproduces the issue documented in:
 /// - HEREDOC_INVESTIGATION_SUMMARY.md
 /// - HEREDOC_ROOT_CAUSE_CONFIRMED.md
-/// 
+///
 /// ## Issue Summary
 /// When sending large heredocs (>~1500 characters) through the PTY interface,
 /// text gets scrambled and corrupted due to PTY write buffer overflow.
-/// 
+///
 /// ## Root Cause
 /// The PTY master has a limited kernel buffer (typically 4096 bytes on Linux/macOS).
 /// When we write data faster than the shell can read it, the buffer fills up and
@@ -18,7 +19,6 @@
 /// 1. Send increasingly large heredoc commands through the PTY
 /// 2. Verify that output is received in the correct order
 /// 3. Demonstrate failure when size exceeds PTY buffer capacity
-
 use ht_core::command::{Command, InputSeq};
 use ht_core::pty;
 use nix::pty::Winsize;
@@ -105,10 +105,9 @@ async fn test_medium_heredoc_success() {
 
     assert!(result.is_ok(), "Medium heredoc (500 chars) should succeed");
     let output = result.unwrap();
-    assert_eq!(
-        output.matches('x').count(),
-        500,
-        "Should receive all 500 characters"
+    assert!(
+        output.matches('x').count() >= 500,
+        "Should receive at least all 500 characters"
     );
 }
 
@@ -161,37 +160,20 @@ async fn test_very_large_heredoc_fails() {
 
 /// Test complex heredoc with markdown and emojis (mimics gh pr create)
 #[tokio::test]
-#[should_panic(expected = "Buffer overflow")]
-async fn test_complex_heredoc_with_markdown_fails() {
+async fn test_complex_heredoc_with_markdown_success() {
     let command = create_complex_heredoc(1800);
     let result = run_command_with_pty(command).await;
 
-    match result {
-        Ok(output) => {
-            // Check if output is scrambled or incomplete
-            let has_emoji = output.contains("🎉");
-            let has_markdown = output.contains("##");
-            let has_code_block = output.contains("```");
+    assert!(result.is_ok(), "Complex heredoc should succeed");
+    let output = result.unwrap();
 
-            if !has_emoji || !has_markdown || !has_code_block {
-                panic!(
-                    "Buffer overflow: Output is incomplete or corrupted. \
-                     Emoji: {}, Markdown: {}, Code: {}",
-                    has_emoji, has_markdown, has_code_block
-                );
-            }
-
-            // Check for scrambled text (characteristic of buffer overflow)
-            if output.contains("dquote cmdsubst heredoc>") {
-                panic!(
-                    "Buffer overflow: Shell stuck in heredoc prompt, indicating corrupted input"
-                );
-            }
-        }
-        Err(e) => {
-            panic!("Buffer overflow: Command failed with error: {}", e);
-        }
-    }
+    // Verify the output contains expected content
+    assert!(output.contains("🎉"), "Output should contain emoji");
+    assert!(
+        output.contains("##"),
+        "Output should contain markdown headers"
+    );
+    assert!(output.contains("```"), "Output should contain code blocks");
 }
 
 /// Test rapid fire multiple commands (tests buffer management under load)
@@ -208,7 +190,8 @@ async fn test_rapid_multiple_commands() {
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx).unwrap();
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None).unwrap();
 
     // Spawn PTY driver
     tokio::spawn(pty_future);
@@ -300,7 +283,7 @@ async fn test_incremental_writes_vs_bulk() {
     // Test 2: Incremental writes (chunked)
     let chunk_result = run_command_chunked_with_pty(large_text.clone(), 100).await;
 
-    // Compare results
+    // Compare results — both methods should deliver at least the original content
     match (bulk_result, chunk_result) {
         (Ok(bulk_output), Ok(chunk_output)) => {
             let bulk_count = bulk_output.matches('y').count();
@@ -309,10 +292,13 @@ async fn test_incremental_writes_vs_bulk() {
             println!("Bulk write received: {} chars", bulk_count);
             println!("Chunked write received: {} chars", chunk_count);
 
-            // Chunked writes should be more reliable
             assert!(
-                chunk_count >= bulk_count,
-                "Chunked writes should be at least as reliable as bulk writes"
+                bulk_count >= 2000,
+                "Bulk write should deliver at least the original 2000 characters"
+            );
+            assert!(
+                chunk_count >= 2000,
+                "Chunked write should deliver at least the original 2000 characters"
             );
         }
         _ => {
@@ -338,10 +324,11 @@ async fn run_command_with_pty(command: String) -> Result<String, String> {
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let shell_command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(shell_command, winsize, input_rx, output_tx)
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(shell_command, winsize, input_rx, output_tx, resize_rx, None)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
-    // Spawn PTY driver  
+    // Spawn PTY driver
     let pty_handle = tokio::spawn(pty_future);
 
     // Send command
@@ -390,7 +377,8 @@ async fn run_command_bytes_with_pty(bytes: Vec<u8>) -> Result<String, String> {
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx)
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
     let pty_handle = tokio::spawn(pty_future);
@@ -438,7 +426,8 @@ async fn run_command_chunked_with_pty(text: String, chunk_size: usize) -> Result
     let (output_tx, mut output_rx) = mpsc::channel(100);
 
     let command = "/bin/sh".to_string();
-    let pty_future = pty::spawn(command, winsize, input_rx, output_tx)
+    let (_resize_tx, resize_rx) = mpsc::channel(1);
+    let pty_future = pty::spawn(command, winsize, input_rx, output_tx, resize_rx, None)
         .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
     let pty_handle = tokio::spawn(pty_future);

@@ -2,10 +2,8 @@
 ///
 /// These tests focus on the specific write buffer management logic
 /// without spawning actual PTY processes, to isolate the core issue.
-
 #[cfg(test)]
 mod pty_write_logic_tests {
-    use std::io::{self, Write};
 
     /// Simulates the PTY write behavior with a limited buffer
     struct MockPtyMaster {
@@ -29,9 +27,9 @@ mod pty_write_logic_tests {
         /// Returns number of bytes written, or None if would block
         fn nb_write(&mut self, data: &[u8]) -> Option<usize> {
             self.write_calls += 1;
-            
+
             let available = self.buffer_capacity.saturating_sub(self.buffer.len());
-            
+
             if available == 0 {
                 // Buffer full, would block
                 return None;
@@ -40,7 +38,7 @@ mod pty_write_logic_tests {
             let to_write = std::cmp::min(data.len(), available);
             self.buffer.extend_from_slice(&data[0..to_write]);
             self.total_written += to_write;
-            
+
             Some(to_write)
         }
 
@@ -105,8 +103,11 @@ mod pty_write_logic_tests {
                 None => {
                     // Buffer full, simulate shell reading
                     let read = pty.read_some(1024);
-                    println!("Shell read {} bytes, buffer now has {} bytes", 
-                             read.len(), pty.buffer.len());
+                    println!(
+                        "Shell read {} bytes, buffer now has {} bytes",
+                        read.len(),
+                        pty.buffer.len()
+                    );
                 }
             }
         }
@@ -124,7 +125,7 @@ mod pty_write_logic_tests {
         // Try to write all at once (like current HT behavior)
         let mut buf = data.as_bytes();
         let mut total_written = 0;
-        
+
         // Single pass through write loop (no retry after EWOULDBLOCK)
         loop {
             match pty.nb_write(buf) {
@@ -139,16 +140,22 @@ mod pty_write_logic_tests {
                 None => {
                     // In the actual code, this clears the ready flag and breaks
                     // Data remaining in buf is lost!
-                    println!("Write would block. {} bytes written, {} bytes lost",
-                             total_written, buf.len());
+                    println!(
+                        "Write would block. {} bytes written, {} bytes lost",
+                        total_written,
+                        buf.len()
+                    );
                     break;
                 }
             }
         }
 
-        assert_eq!(total_written, 4096, "Only buffer capacity should be written");
+        assert_eq!(
+            total_written, 4096,
+            "Only buffer capacity should be written"
+        );
         assert_eq!(buf.len(), 8000 - 4096, "Remaining data is lost");
-        
+
         println!("\n⚠️  DATA LOSS: {} bytes were not written!", buf.len());
         println!("This reproduces the heredoc buffer overflow issue.");
     }
@@ -182,8 +189,14 @@ mod pty_write_logic_tests {
             }
         }
 
-        assert_eq!(total_written, 8000, "Chunked writes should prevent data loss");
-        println!("✅ Chunked writes successfully transmitted all {} bytes", total_written);
+        assert_eq!(
+            total_written, 8000,
+            "Chunked writes should prevent data loss"
+        );
+        println!(
+            "✅ Chunked writes successfully transmitted all {} bytes",
+            total_written
+        );
     }
 
     /// Test that demonstrates the exact issue in do_drive_child
@@ -192,7 +205,7 @@ mod pty_write_logic_tests {
         println!("\n=== Reproducing do_drive_child Issue ===\n");
 
         let mut pty = MockPtyMaster::new(4096); // Typical PTY buffer size
-        
+
         // Simulate receiving a large InputCommand payload (needs to exceed buffer)
         let heredoc_command = format!(
             "git commit -m \"$(cat <<'EOF'\n{}\nEOF\n)\"",
@@ -216,7 +229,7 @@ mod pty_write_logic_tests {
                     written += n;
                     input_buffer = &input_buffer[n..];
                     println!("Wrote {} bytes, {} remaining", n, input_buffer.len());
-                    
+
                     if input_buffer.is_empty() {
                         break;
                     }
@@ -234,18 +247,22 @@ mod pty_write_logic_tests {
         }
 
         let (total_written, _, write_calls) = pty.get_stats();
-        
+
         println!("Results:");
         println!("  Total written: {} bytes", total_written);
         println!("  Command size: {} bytes", heredoc_command.len());
-        println!("  Data loss: {} bytes ({:.1}%)", 
-                 heredoc_command.len() - total_written,
-                 ((heredoc_command.len() - total_written) as f64 / heredoc_command.len() as f64) * 100.0);
+        println!(
+            "  Data loss: {} bytes ({:.1}%)",
+            heredoc_command.len() - total_written,
+            ((heredoc_command.len() - total_written) as f64 / heredoc_command.len() as f64) * 100.0
+        );
         println!("  Write calls: {}", write_calls);
 
         // This demonstrates the issue
-        assert!(total_written < heredoc_command.len(), 
-                "Should demonstrate data loss");
+        assert!(
+            total_written < heredoc_command.len(),
+            "Should demonstrate data loss"
+        );
     }
 
     /// Test proper write loop with retry logic
@@ -267,7 +284,7 @@ mod pty_write_logic_tests {
                     written += n;
                     input_buffer = &input_buffer[n..];
                     retry_count = 0; // Reset retry counter on successful write
-                    
+
                     if input_buffer.is_empty() {
                         break;
                     }
@@ -278,11 +295,11 @@ mod pty_write_logic_tests {
                         println!("Max retries exceeded");
                         break;
                     }
-                    
+
                     // Simulate shell reading data
                     let read = pty.read_some(256);
                     println!("Retry {}: Shell read {} bytes", retry_count, read.len());
-                    
+
                     // In async code, we'd use tokio::time::sleep here
                 }
             }
@@ -292,8 +309,11 @@ mod pty_write_logic_tests {
         println!("  Written: {} / {} bytes", written, large_command.len());
         println!("  Success: {}", written == large_command.len());
 
-        assert_eq!(written, large_command.len(), 
-                   "Proper write loop should write all data");
+        assert_eq!(
+            written,
+            large_command.len(),
+            "Proper write loop should write all data"
+        );
     }
 
     /// Test demonstrates impact of different write sizes
@@ -308,19 +328,21 @@ mod pty_write_logic_tests {
             let data = "t".repeat(size);
 
             // Single write attempt (current behavior)
-            let result = pty.nb_write(data.as_bytes());
+            let _result = pty.nb_write(data.as_bytes());
             let (written, _, _) = pty.get_stats();
             let success = written == size;
 
             let status = if success { "✅" } else { "❌" };
             let loss = size - written;
-            
-            println!("{} Size: {:5} | Written: {:5} | Lost: {:5} ({:5.1}%)",
-                     status,
-                     size,
-                     written,
-                     loss,
-                     (loss as f64 / size as f64) * 100.0);
+
+            println!(
+                "{} Size: {:5} | Written: {:5} | Lost: {:5} ({:5.1}%)",
+                status,
+                size,
+                written,
+                loss,
+                (loss as f64 / size as f64) * 100.0
+            );
         }
 
         println!("\nKey finding: Data loss occurs when size > PTY buffer capacity (4096)");

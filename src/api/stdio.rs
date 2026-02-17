@@ -93,12 +93,12 @@ fn read_stdin(input_tx: mpsc::UnboundedSender<String>) -> Result<()> {
 }
 
 /// Send command to PTY with chunking for large inputs to prevent buffer overflow
-/// 
+///
 /// PTY buffers are typically 4096 bytes. When inputs exceed this size, writes can
 /// fail with EWOULDBLOCK, causing data loss. This function chunks large inputs
 /// into smaller pieces and sends them with small delays to allow the PTY buffer
 /// to drain.
-/// 
+///
 /// Thresholds:
 /// - < 1500 bytes: Send directly (safe)
 /// - >= 1500 bytes: Chunk into 512-byte pieces with 10ms delays
@@ -107,49 +107,103 @@ async fn send_command_with_chunking(
     command: Command,
 ) -> Result<()> {
     const CHUNK_THRESHOLD: usize = 1500; // Based on test results
-    const CHUNK_SIZE: usize = 512;        // Well below PTY buffer size
-    const CHUNK_DELAY_MS: u64 = 10;       // Allow PTY buffer to drain
+    const CHUNK_SIZE: usize = 512; // Well below PTY buffer size
+    const CHUNK_DELAY_MS: u64 = 10; // Allow PTY buffer to drain
 
     match command {
         Command::Input(seqs) => {
             // Calculate total size of input
-            let total_size: usize = seqs.iter().map(|seq| match seq {
-                InputSeq::Standard(s) => s.len(),
-                InputSeq::Cursor(s1, _) => s1.len(), // Use first sequence for size
-            }).sum();
+            let total_size: usize = seqs
+                .iter()
+                .map(|seq| match seq {
+                    InputSeq::Standard(s) => s.len(),
+                    InputSeq::Cursor(s1, _) => s1.len(), // Use first sequence for size
+                })
+                .sum();
 
             if total_size < CHUNK_THRESHOLD {
                 // Small input - send directly
                 command_tx.send(Command::Input(seqs)).await?;
             } else {
-                // Large input - chunk it
-                eprintln!("Large input detected ({} bytes), chunking into {}-byte pieces", 
-                         total_size, CHUNK_SIZE);
-                
-                // Flatten all sequences into a single string
-                let mut full_input = String::with_capacity(total_size);
+                // Large input - chunk it, preserving InputSeq variants
+                eprintln!(
+                    "Large input detected ({} bytes), chunking into {}-byte pieces",
+                    total_size, CHUNK_SIZE
+                );
+
+                let mut chunk: Vec<InputSeq> = Vec::new();
+                let mut chunk_size: usize = 0;
+                let mut chunks_sent: usize = 0;
+
                 for seq in seqs {
-                    match seq {
-                        InputSeq::Standard(s) => full_input.push_str(&s),
-                        InputSeq::Cursor(s1, _) => full_input.push_str(&s1),
+                    let seq_size = seq_byte_size(&seq);
+
+                    // If this single Standard seq exceeds CHUNK_SIZE, split it
+                    if let InputSeq::Standard(ref s) = seq {
+                        if seq_size > CHUNK_SIZE {
+                            // Flush current chunk first
+                            if !chunk.is_empty() {
+                                command_tx
+                                    .send(Command::Input(std::mem::take(&mut chunk)))
+                                    .await?;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    CHUNK_DELAY_MS,
+                                ))
+                                .await;
+                                chunk_size = 0;
+                                chunks_sent += 1;
+                            }
+
+                            // Split the large string on UTF-8 character boundaries
+                            let mut remaining = s.as_str();
+                            while !remaining.is_empty() {
+                                let end = remaining
+                                    .char_indices()
+                                    .take_while(|(idx, _)| *idx < CHUNK_SIZE)
+                                    .last()
+                                    .map(|(idx, ch)| idx + ch.len_utf8())
+                                    .unwrap_or(remaining.len());
+                                let chunk_str = &remaining[..end];
+                                remaining = &remaining[end..];
+
+                                command_tx
+                                    .send(Command::Input(vec![standard_key(chunk_str)]))
+                                    .await?;
+
+                                if !remaining.is_empty() {
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                                        CHUNK_DELAY_MS,
+                                    ))
+                                    .await;
+                                }
+                                chunks_sent += 1;
+                            }
+                            continue;
+                        }
                     }
+
+                    // Would adding this seq exceed the chunk size?
+                    if chunk_size + seq_size > CHUNK_SIZE && !chunk.is_empty() {
+                        command_tx
+                            .send(Command::Input(std::mem::take(&mut chunk)))
+                            .await?;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(CHUNK_DELAY_MS))
+                            .await;
+                        chunk_size = 0;
+                        chunks_sent += 1;
+                    }
+
+                    chunk_size += seq_size;
+                    chunk.push(seq);
                 }
 
-                // Send in chunks
-                let bytes = full_input.as_bytes();
-                let num_chunks = (bytes.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
-                
-                for (i, chunk) in bytes.chunks(CHUNK_SIZE).enumerate() {
-                    let chunk_str = String::from_utf8_lossy(chunk).to_string();
-                    command_tx.send(Command::Input(vec![standard_key(chunk_str)])).await?;
-                    
-                    // Add delay between chunks (except after the last one)
-                    if i + 1 < num_chunks {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(CHUNK_DELAY_MS)).await;
-                    }
+                // Send remaining chunk
+                if !chunk.is_empty() {
+                    command_tx.send(Command::Input(chunk)).await?;
+                    chunks_sent += 1;
                 }
-                
-                eprintln!("Large input sent successfully in {} chunks", num_chunks);
+
+                eprintln!("Large input sent successfully in {} chunks", chunks_sent);
             }
         }
         // Other command types pass through directly
@@ -159,6 +213,16 @@ async fn send_command_with_chunking(
     }
 
     Ok(())
+}
+
+fn seq_byte_size(seq: &InputSeq) -> usize {
+    match seq {
+        InputSeq::Standard(s) => s.len(),
+        // Only measures the normal-mode sequence; the application-mode
+        // alternative (s2) is typically the same length.  Cursor escapes
+        // are small (a few bytes each) so any undercount won't exceed CHUNK_SIZE.
+        InputSeq::Cursor(s1, _) => s1.len(),
+    }
 }
 
 fn parse_line(line: &str) -> Result<command::Command, String> {

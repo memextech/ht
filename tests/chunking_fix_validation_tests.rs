@@ -2,9 +2,6 @@
 ///
 /// These tests verify that the chunking implementation in src/api/stdio.rs
 /// properly handles large inputs without data loss.
-
-use ht_core::command::{Command, InputSeq};
-
 /// Test that verifies chunking threshold detection
 #[test]
 fn test_chunking_threshold_logic() {
@@ -13,26 +10,27 @@ fn test_chunking_threshold_logic() {
     const CHUNK_SIZE: usize = 512;
 
     let test_cases = vec![
-        (100, false, 1),    // Small, no chunking
-        (500, false, 1),    // Medium, no chunking
-        (1000, false, 1),   // Still safe, no chunking
-        (1499, false, 1),   // Just below threshold, no chunking
-        (1500, true, 3),    // At threshold, chunk into 3 pieces
-        (2000, true, 4),    // Above threshold, chunk into 4 pieces
-        (5000, true, 10),   // Large, chunk into 10 pieces
+        (100, false, 1),  // Small, no chunking
+        (500, false, 1),  // Medium, no chunking
+        (1000, false, 1), // Still safe, no chunking
+        (1499, false, 1), // Just below threshold, no chunking
+        (1500, true, 3),  // At threshold, chunk into 3 pieces
+        (2000, true, 4),  // Above threshold, chunk into 4 pieces
+        (5000, true, 10), // Large, chunk into 10 pieces
     ];
 
     for (size, should_chunk, expected_chunks) in test_cases {
         let needs_chunking = size >= CHUNK_THRESHOLD;
         assert_eq!(
-            needs_chunking, should_chunk,
+            needs_chunking,
+            should_chunk,
             "Size {} should {}be chunked",
             size,
             if should_chunk { "" } else { "NOT " }
         );
 
         if needs_chunking {
-            let num_chunks = (size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+            let num_chunks = size.div_ceil(CHUNK_SIZE);
             assert_eq!(
                 num_chunks, expected_chunks,
                 "Size {} should be split into {} chunks",
@@ -47,7 +45,7 @@ fn test_chunking_threshold_logic() {
 fn test_chunk_size_calculation() {
     const CHUNK_SIZE: usize = 512;
 
-    let test_cases = vec![
+    let test_cases: Vec<(usize, usize)> = vec![
         (512, 1),   // Exactly one chunk
         (513, 2),   // One byte over = 2 chunks
         (1024, 2),  // Exactly 2 chunks
@@ -57,7 +55,7 @@ fn test_chunk_size_calculation() {
     ];
 
     for (size, expected_chunks) in test_cases {
-        let num_chunks = (size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let num_chunks = size.div_ceil(CHUNK_SIZE);
         assert_eq!(
             num_chunks, expected_chunks,
             "Size {} should split into {} chunks of max {} bytes",
@@ -88,7 +86,10 @@ fn test_chunking_preserves_data() {
         test_data.len(),
         "Reassembled data should match original length"
     );
-    assert_eq!(reassembled, test_data, "Reassembled data should match original");
+    assert_eq!(
+        reassembled, test_data,
+        "Reassembled data should match original"
+    );
 }
 
 /// Test chunking with various data types
@@ -138,20 +139,16 @@ fn test_chunking_with_different_data() {
 /// Test timing between chunks
 #[test]
 fn test_chunk_delay_is_reasonable() {
-    const CHUNK_DELAY_MS: u64 = 10;
-    const MAX_REASONABLE_DELAY_MS: u64 = 50;
+    let chunk_delay_ms: u64 = 10;
+    let max_reasonable_delay_ms: u64 = 50;
 
-    assert!(
-        CHUNK_DELAY_MS <= MAX_REASONABLE_DELAY_MS,
-        "Chunk delay should be reasonable ({}ms is acceptable)",
-        CHUNK_DELAY_MS
-    );
+    assert!(chunk_delay_ms <= max_reasonable_delay_ms);
 
     // Calculate total delay for large inputs
     let input_size = 5000;
     let chunk_size = 512;
     let num_chunks = (input_size + chunk_size - 1) / chunk_size;
-    let total_delay_ms = (num_chunks - 1) as u64 * CHUNK_DELAY_MS;
+    let total_delay_ms = (num_chunks - 1) as u64 * chunk_delay_ms;
 
     println!(
         "For {} byte input: {} chunks, total delay: {}ms",
@@ -250,14 +247,14 @@ fn test_non_input_commands_pass_through() {
 
     // Resize commands
     let resize_cols = 80;
-    let resize_rows = 24;
+    let _resize_rows = 24;
     assert!(resize_cols < 1500); // Not subject to chunking
 
     // Snapshot commands
     // No payload, not subject to chunking
 
     // SendKeys commands
-    let keys = vec!["C-c", "Enter", "Up"];
+    let keys = ["C-c", "Enter", "Up"];
     let total_bytes: usize = keys.iter().map(|k| k.len()).sum();
     assert!(total_bytes < 1500); // Typically small
 }
@@ -268,14 +265,14 @@ fn test_chunking_performance_overhead() {
     const CHUNK_SIZE: usize = 512;
     const CHUNK_DELAY_MS: u64 = 10;
 
-    let test_sizes = vec![1500, 2000, 3000, 5000, 10000];
+    let test_sizes: Vec<usize> = vec![1500, 2000, 3000, 5000, 10000];
 
     println!("\nChunking Performance Analysis:");
     println!("Size (bytes) | Chunks | Delay (ms) | Throughput (KB/s)");
     println!("-------------|--------|------------|------------------");
 
     for size in test_sizes {
-        let num_chunks = (size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let num_chunks = size.div_ceil(CHUNK_SIZE);
         let total_delay_ms = (num_chunks - 1) as u64 * CHUNK_DELAY_MS;
         let throughput_kbps = if total_delay_ms > 0 {
             (size as f64 / 1024.0) / (total_delay_ms as f64 / 1000.0)
@@ -316,7 +313,7 @@ fn test_full_chunking_flow_simulation() {
     assert!(needs_chunking);
 
     // Step 2: Calculate chunks
-    let num_chunks = (large_heredoc.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let num_chunks = large_heredoc.len().div_ceil(CHUNK_SIZE);
     println!("Number of chunks: {}", num_chunks);
     assert_eq!(num_chunks, 6);
 

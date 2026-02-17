@@ -7,7 +7,6 @@
 /// ## Issue
 /// When large heredocs (>~1500 chars) are sent via the `input` command,
 /// they can cause PTY buffer overflow leading to data corruption.
-
 use ht_core::command::{Command, InputSeq};
 use serde_json::json;
 
@@ -18,7 +17,8 @@ fn test_parse_small_input_command() {
     let json_str = json!({
         "type": "input",
         "payload": payload
-    }).to_string();
+    })
+    .to_string();
 
     // This simulates what happens when ht receives the JSON command
     let result: Result<serde_json::Value, _> = serde_json::from_str(&json_str);
@@ -35,11 +35,15 @@ fn test_parse_medium_input_command() {
     let json_str = json!({
         "type": "input",
         "payload": payload
-    }).to_string();
+    })
+    .to_string();
 
     let result: Result<serde_json::Value, _> = serde_json::from_str(&json_str);
-    assert!(result.is_ok(), "Should parse medium input command (1000 chars)");
-    
+    assert!(
+        result.is_ok(),
+        "Should parse medium input command (1000 chars)"
+    );
+
     let parsed = result.unwrap();
     assert_eq!(parsed["payload"].as_str().unwrap().len(), 1000);
 }
@@ -51,15 +55,19 @@ fn test_parse_large_input_command() {
     let json_str = json!({
         "type": "input",
         "payload": payload
-    }).to_string();
+    })
+    .to_string();
 
     // JSON parsing itself should work fine
     let result: Result<serde_json::Value, _> = serde_json::from_str(&json_str);
-    assert!(result.is_ok(), "Should parse large input command (1500 chars)");
+    assert!(
+        result.is_ok(),
+        "Should parse large input command (1500 chars)"
+    );
 
     let parsed = result.unwrap();
     assert_eq!(parsed["payload"].as_str().unwrap().len(), 1500);
-    
+
     println!("JSON size: {} bytes", json_str.len());
     println!("Payload size: {} bytes", payload.len());
 }
@@ -71,10 +79,14 @@ fn test_parse_very_large_input_command() {
     let json_str = json!({
         "type": "input",
         "payload": payload
-    }).to_string();
+    })
+    .to_string();
 
     let result: Result<serde_json::Value, _> = serde_json::from_str(&json_str);
-    assert!(result.is_ok(), "JSON parsing should work even for very large inputs");
+    assert!(
+        result.is_ok(),
+        "JSON parsing should work even for very large inputs"
+    );
 
     println!("Very large command - JSON size: {} bytes", json_str.len());
     // The issue is not in JSON parsing but in PTY writes
@@ -139,7 +151,8 @@ EOF
     let json_str = json!({
         "type": "input",
         "payload": git_command
-    }).to_string();
+    })
+    .to_string();
 
     println!("\n=== Complex Heredoc Command Analysis ===");
     println!("Heredoc content size: {} bytes", heredoc_content.len());
@@ -152,7 +165,10 @@ EOF
 
     // Document the sizes where overflow occurs
     if json_str.len() > 2000 {
-        println!("\n⚠️  This size ({} bytes) is likely to cause PTY buffer overflow!", json_str.len());
+        println!(
+            "\n⚠️  This size ({} bytes) is likely to cause PTY buffer overflow!",
+            json_str.len()
+        );
         println!("   Recommendation: Use file-based approach for payloads > 1500 bytes");
     }
 }
@@ -166,13 +182,14 @@ fn test_command_input_memory_overhead() {
     for size in sizes {
         let text = "z".repeat(size);
         let input_seq = InputSeq::Standard(text.clone());
-        let command = Command::Input(vec![input_seq]);
+        let _command = Command::Input(vec![input_seq]);
 
         // Serialize to JSON to see protocol overhead
         let json = serde_json::to_string(&json!({
             "type": "input",
             "payload": text
-        })).unwrap();
+        }))
+        .unwrap();
 
         println!(
             "Payload: {:5} bytes | JSON: {:5} bytes | Overhead: {:4} bytes ({:.1}%)",
@@ -188,12 +205,12 @@ fn test_command_input_memory_overhead() {
 fn test_chunking_strategy() {
     // Test different chunking strategies for large inputs
     let large_input = "a".repeat(3000);
-    
+
     println!("\n=== Chunking Strategies ===");
     println!("Total input size: {} bytes", large_input.len());
 
     let chunk_sizes = vec![256, 512, 1024];
-    
+
     for chunk_size in chunk_sizes {
         let chunks: Vec<&str> = large_input
             .as_bytes()
@@ -232,7 +249,7 @@ fn test_realistic_gh_pr_create_scenarios() {
     println!("\n=== Realistic gh pr create Scenarios ===");
 
     for (name, size) in scenarios {
-        let body = format!("PR description line.\n").repeat(size / 25);
+        let body = "PR description line.\n".to_string().repeat(size / 25);
         let command = format!(
             r#"gh pr create --title "Fix something" --body "$(cat <<'EOF'
 {}
@@ -245,7 +262,8 @@ EOF
         let json_payload = json!({
             "type": "input",
             "payload": command
-        }).to_string();
+        })
+        .to_string();
 
         let status = if json_payload.len() < 1500 {
             "✅ SAFE"
@@ -276,7 +294,8 @@ fn test_find_failure_threshold() {
         let json = json!({
             "type": "input",
             "payload": payload
-        }).to_string();
+        })
+        .to_string();
 
         let status = if json.len() < 1500 {
             "✅"
@@ -286,7 +305,12 @@ fn test_find_failure_threshold() {
             "❌"
         };
 
-        println!("{} Size: {:4} bytes | JSON: {:4} bytes", status, size, json.len());
+        println!(
+            "{} Size: {:4} bytes | JSON: {:4} bytes",
+            status,
+            size,
+            json.len()
+        );
     }
 
     println!("\nKey findings:");
@@ -305,7 +329,8 @@ fn test_escape_sequences_in_large_payloads() {
     let json = json!({
         "type": "input",
         "payload": repeated
-    }).to_string();
+    })
+    .to_string();
 
     println!("\n=== Escape Sequences Test ===");
     println!("Text with ANSI codes repeated 200 times");
