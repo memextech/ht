@@ -1,0 +1,8 @@
+[package]
+name = "winpty-probe"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+winpty-rs = "1.0"
