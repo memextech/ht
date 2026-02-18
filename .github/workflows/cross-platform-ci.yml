@@ -218,6 +218,7 @@ jobs:
       shell: cmd
       working-directory: tests/winpty-probe
       run: |
+        set PATH=%RUNNER_TEMP%\winpty\x64\bin;%PATH%
         echo Building winpty-probe...
         cargo run --release
         echo.
