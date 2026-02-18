@@ -219,12 +219,37 @@ jobs:
       working-directory: tests/winpty-probe
       run: cargo build --release
 
+    - name: Diagnose probe dependencies
+      shell: powershell
+      working-directory: tests/winpty-probe
+      run: |
+        Write-Host "=== Probe exe dependencies ==="
+        & "dumpbin" /DEPENDENTS target\release\winpty-probe.exe 2>$null
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "(dumpbin not on PATH, trying via VS Developer tools)"
+          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vsWhere -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vsInstall" -Recurse -Filter "dumpbin.exe" | Select-Object -First 1
+          if ($dumpbin) {
+            & $dumpbin.FullName /DEPENDENTS target\release\winpty-probe.exe
+          } else {
+            Write-Host "(dumpbin not found)"
+          }
+        }
+        Write-Host ""
+        Write-Host "=== WinPTY x64 bin contents ==="
+        Get-ChildItem "$env:RUNNER_TEMP\winpty\x64\bin" | Format-Table Name, Length
+        Write-Host ""
+        Write-Host "=== target\release DLL files ==="
+        Get-ChildItem target\release\*.dll -ErrorAction SilentlyContinue | Format-Table Name, Length
+        Get-ChildItem target\release\*.exe -ErrorAction SilentlyContinue | Format-Table Name, Length
+
     - name: Run WinPTY probe
       shell: cmd
       working-directory: tests/winpty-probe
       run: |
-        copy "%RUNNER_TEMP%\winpty\x64\bin\winpty.dll" target\release\
-        copy "%RUNNER_TEMP%\winpty\x64\bin\winpty-agent.exe" target\release\
+        copy "%RUNNER_TEMP%\winpty\x64\bin\*.*" target\release\
+        set PATH=target\release;%RUNNER_TEMP%\winpty\x64\bin;%PATH%
         target\release\winpty-probe.exe
         exit /b %ERRORLEVEL%
 
