@@ -24,7 +24,15 @@ async fn main() -> Result<()> {
 
     start_http_api(cli.listen, clients_tx.clone()).await?;
     let api = start_stdio_api(command_tx, clients_tx, cli.subscribe.unwrap_or_default());
-    let pty = start_pty(cli.command, &cli.size, input_rx, output_tx, resize_rx)?;
+    let pty = start_pty(
+        cli.command,
+        &cli.size,
+        input_rx,
+        output_tx,
+        resize_rx,
+        #[cfg(windows)]
+        cli.backend,
+    )?;
     let session = build_session(&cli.size);
     run_event_loop(
         output_rx, input_tx, command_rx, clients_rx, session, api, resize_tx,
@@ -51,6 +59,7 @@ fn start_pty(
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
     resize_rx: mpsc::Receiver<(u16, u16)>,
+    #[cfg(windows)] backend: cli::Backend,
 ) -> Result<JoinHandle<Result<()>>> {
     let winsize = **size;
 
@@ -100,14 +109,35 @@ fn start_pty(
         }
     };
 
-    Ok(tokio::spawn(pty::spawn(
-        command_str,
-        winsize,
-        input_rx,
-        output_tx,
-        resize_rx,
-        initial_input,
-    )?))
+    #[cfg(unix)]
+    {
+        Ok(tokio::spawn(pty::spawn(
+            command_str,
+            winsize,
+            input_rx,
+            output_tx,
+            resize_rx,
+            initial_input,
+        )?))
+    }
+
+    #[cfg(windows)]
+    {
+        if matches!(backend, cli::Backend::Scrape) {
+            eprintln!("warning: using scrape backend — this is a CI fallback with limited input fidelity.");
+            eprintln!("         Piped stdin data will be rewritten as keystrokes (may corrupt binary/raw input).");
+            eprintln!("         Use the default ConPTY backend for interactive use or piped data workloads.");
+        }
+        Ok(tokio::spawn(pty::spawn_with_backend(
+            command_str,
+            winsize,
+            input_rx,
+            output_tx,
+            resize_rx,
+            initial_input,
+            backend,
+        )?))
+    }
 }
 
 async fn start_http_api(

@@ -1,5 +1,7 @@
 use anyhow::Result;
 use std::future::Future;
+#[cfg(windows)]
+use std::pin::Pin;
 use tokio::sync::mpsc;
 
 // Platform-specific imports and implementations
@@ -55,6 +57,37 @@ use windows::Win32::System::Threading::{
 };
 #[cfg(windows)]
 use windows::core::PWSTR;
+
+// Scrape backend imports
+#[cfg(windows)]
+use windows::Win32::System::Console::{
+    AttachConsole, FreeConsole, GetConsoleMode, GetConsoleScreenBufferInfo, ReadConsoleOutputW,
+    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleScreenBufferSize, SetConsoleWindowInfo,
+    WriteConsoleInputW, GenerateConsoleCtrlEvent, GetStdHandle,
+    ATTACH_PARENT_PROCESS, CHAR_INFO, CONSOLE_SCREEN_BUFFER_INFO, CREATE_NEW_CONSOLE,
+    CREATE_NEW_PROCESS_GROUP, CTRL_C_EVENT, ENABLE_PROCESSED_INPUT,
+    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    INPUT_RECORD, KEY_EVENT_RECORD, SMALL_RECT, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE,
+};
+#[cfg(windows)]
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+#[cfg(windows)]
+use windows::Win32::System::Threading::STARTF_USESHOWWINDOW;
+#[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    MapVirtualKeyW, VkKeyScanW, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+#[cfg(windows)]
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use windows::Win32::Foundation::GENERIC_READ;
+#[cfg(windows)]
+use windows::Win32::Foundation::GENERIC_WRITE;
 
 /// A `Send`-safe wrapper for Windows handles (`HANDLE` / `HPCON`).
 ///
@@ -815,6 +848,1321 @@ pub fn spawn(
     Ok(conpty.drive(input_rx, output_tx, resize_rx, initial_input))
 }
 
+// ── Scrape PTY backend ──────────────────────────────────────────────────
+
+#[cfg(windows)]
+static SCRAPE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+#[derive(Clone, PartialEq)]
+struct Cell {
+    ch: char,
+    width: u8,
+    attr: u16,
+}
+
+#[cfg(windows)]
+impl Cell {
+    fn blank() -> Self {
+        Cell {
+            ch: ' ',
+            width: 1,
+            attr: 0x07, // default: white on black
+        }
+    }
+}
+
+/// Converts a Windows console attribute word to an ANSI SGR escape sequence.
+#[cfg(windows)]
+fn attr_to_sgr(attr: u16) -> String {
+    // Windows BGR bit ordering for foreground (bits 0-3) and background (bits 4-7)
+    const WIN_FG_BLUE: u16 = 0x0001;
+    const WIN_FG_GREEN: u16 = 0x0002;
+    const WIN_FG_RED: u16 = 0x0004;
+    const WIN_FG_INTENSITY: u16 = 0x0008;
+    const WIN_BG_BLUE: u16 = 0x0010;
+    const WIN_BG_GREEN: u16 = 0x0020;
+    const WIN_BG_RED: u16 = 0x0040;
+    const WIN_BG_INTENSITY: u16 = 0x0080;
+    const COMMON_LVB_REVERSE_VIDEO: u16 = 0x4000;
+    const COMMON_LVB_UNDERSCORE: u16 = 0x8000;
+
+    // Map Windows BGR 3-bit to ANSI color index (0-7)
+    fn win_to_ansi(blue: bool, green: bool, red: bool) -> u8 {
+        // ANSI: 0=black 1=red 2=green 3=yellow 4=blue 5=magenta 6=cyan 7=white
+        let mut idx = 0u8;
+        if red {
+            idx |= 1;
+        }
+        if green {
+            idx |= 2;
+        }
+        if blue {
+            idx |= 4;
+        }
+        idx
+    }
+
+    let fg_idx = win_to_ansi(
+        attr & WIN_FG_BLUE != 0,
+        attr & WIN_FG_GREEN != 0,
+        attr & WIN_FG_RED != 0,
+    );
+    let fg_bright = attr & WIN_FG_INTENSITY != 0;
+    let bg_idx = win_to_ansi(
+        attr & WIN_BG_BLUE != 0,
+        attr & WIN_BG_GREEN != 0,
+        attr & WIN_BG_RED != 0,
+    );
+    let bg_bright = attr & WIN_BG_INTENSITY != 0;
+
+    let fg_code = if fg_bright { 90 + fg_idx as u32 } else { 30 + fg_idx as u32 };
+    let bg_code = if bg_bright { 100 + bg_idx as u32 } else { 40 + bg_idx as u32 };
+
+    let mut sgr = format!("\x1b[0;{};{}", fg_code, bg_code);
+    if attr & COMMON_LVB_REVERSE_VIDEO != 0 {
+        sgr.push_str(";7");
+    }
+    if attr & COMMON_LVB_UNDERSCORE != 0 {
+        sgr.push_str(";4");
+    }
+    sgr.push('m');
+    sgr
+}
+
+/// Decodes a row of CHAR_INFO into a Vec<Cell>.
+#[cfg(windows)]
+fn decode_char_info_row(row: &[CHAR_INFO]) -> Vec<Cell> {
+    const LVB_LEADING_BYTE: u16 = 0x0100;
+    const LVB_TRAILING_BYTE: u16 = 0x0200;
+    // Mask to remove width-hint LVB bits but preserve colors and style flags
+    const ATTR_MASK: u16 = 0xCCFF;
+
+    let mut cells = Vec::with_capacity(row.len());
+    let mut i = 0;
+    while i < row.len() {
+        let ci = &row[i];
+        let attrs = ci.Attributes;
+
+        if attrs & LVB_TRAILING_BYTE != 0 {
+            // Padding cell for a wide character, skip
+            i += 1;
+            continue;
+        }
+
+        let raw_char = unsafe { ci.Char.UnicodeChar };
+        let masked_attr = attrs & ATTR_MASK;
+
+        if attrs & LVB_LEADING_BYTE != 0 {
+            // Wide character — might be a surrogate pair
+            let ch = if (0xD800..=0xDBFF).contains(&raw_char) && i + 1 < row.len() {
+                let next_raw = unsafe { row[i + 1].Char.UnicodeChar };
+                // Decode UTF-16 surrogate pair
+                char::decode_utf16([raw_char, next_raw])
+                    .next()
+                    .and_then(|r| r.ok())
+                    .unwrap_or('\u{FFFD}')
+            } else {
+                char::from_u32(raw_char as u32).unwrap_or('\u{FFFD}')
+            };
+            cells.push(Cell {
+                ch,
+                width: 2,
+                attr: masked_attr,
+            });
+        } else {
+            // Normal single-width character — check for surrogate pair
+            let ch = if (0xD800..=0xDBFF).contains(&raw_char) && i + 1 < row.len() {
+                let next_raw = unsafe { row[i + 1].Char.UnicodeChar };
+                if (0xDC00..=0xDFFF).contains(&next_raw) {
+                    i += 1; // consume the low surrogate
+                    char::decode_utf16([raw_char, next_raw])
+                        .next()
+                        .and_then(|r| r.ok())
+                        .unwrap_or('\u{FFFD}')
+                } else {
+                    char::from_u32(raw_char as u32).unwrap_or('\u{FFFD}')
+                }
+            } else {
+                char::from_u32(raw_char as u32).unwrap_or('\u{FFFD}')
+            };
+            cells.push(Cell {
+                ch,
+                width: 1,
+                attr: masked_attr,
+            });
+        }
+        i += 1;
+    }
+    cells
+}
+
+/// Diffs previous and current viewport buffers and emits ANSI escape sequences.
+/// Cursor positions are 1-based (ANSI convention).
+#[cfg(windows)]
+fn diff_and_emit(
+    prev: &[Vec<Cell>],
+    curr: &[Vec<Cell>],
+    cursor_row: u16,
+    cursor_col: u16,
+    cols: u16,
+) -> String {
+    let mut out = String::new();
+    let mut last_attr: Option<u16> = None;
+
+    for (row_idx, row) in curr.iter().enumerate() {
+        let changed = if row_idx >= prev.len() {
+            true
+        } else {
+            prev[row_idx] != *row
+        };
+
+        if !changed {
+            continue;
+        }
+
+        // Move cursor to start of this row (1-based)
+        out.push_str(&format!("\x1b[{};1H", row_idx + 1));
+
+        for cell in row {
+            // Emit SGR if attribute changed
+            if last_attr != Some(cell.attr) {
+                out.push_str(&attr_to_sgr(cell.attr));
+                last_attr = Some(cell.attr);
+            }
+            out.push(cell.ch);
+        }
+
+        // Pad with spaces if row is shorter than viewport width
+        let row_visual_width: u16 = row.iter().map(|c| c.width as u16).sum();
+        if row_visual_width < cols {
+            // Erase to end of line to clear stale content
+            out.push_str("\x1b[K");
+        }
+    }
+
+    // Position cursor
+    out.push_str(&format!("\x1b[{};{}H", cursor_row, cursor_col));
+    out
+}
+
+// ── Input parser ────────────────────────────────────────────────────────
+
+#[cfg(windows)]
+enum InputAction {
+    KeyEvent(KEY_EVENT_RECORD),
+    GenerateCtrlC,
+}
+
+#[cfg(windows)]
+struct InputParser {
+    pending: Vec<u8>,
+}
+
+#[cfg(windows)]
+impl InputParser {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    fn flush_pending(&mut self) -> Vec<InputAction> {
+        let pending = std::mem::take(&mut self.pending);
+        let mut actions = Vec::new();
+        for &b in &pending {
+            if b == 0x1b {
+                actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+            } else {
+                actions.extend(self.byte_to_actions(b));
+            }
+        }
+        actions
+    }
+
+    fn parse(&mut self, data: &[u8], conin: HANDLE) -> Vec<InputAction> {
+        let mut input = Vec::new();
+        input.append(&mut self.pending);
+        input.extend_from_slice(data);
+
+        let mut actions = Vec::new();
+        let mut i = 0;
+
+        while i < input.len() {
+            let b = input[i];
+
+            if b == 0x1b {
+                // ESC — check for sequence continuation
+                if i + 1 >= input.len() {
+                    // ESC at end of input — buffer it
+                    self.pending = input[i..].to_vec();
+                    break;
+                }
+
+                let next = input[i + 1];
+
+                if next == b'[' {
+                    // CSI sequence
+                    match self.parse_csi(&input[i..]) {
+                        ParseResult::Complete(acts, consumed) => {
+                            actions.extend(acts);
+                            i += consumed;
+                        }
+                        ParseResult::Incomplete => {
+                            self.pending = input[i..].to_vec();
+                            break;
+                        }
+                        ParseResult::Unrecognized(consumed) => {
+                            // Passthrough: ESC as VK_ESCAPE, then remaining bytes
+                            actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                            for &pb in &input[i + 1..i + consumed] {
+                                actions.extend(self.byte_to_actions(pb));
+                            }
+                            i += consumed;
+                        }
+                    }
+                } else if next == b'O' {
+                    // SS3 sequence
+                    if i + 2 >= input.len() {
+                        self.pending = input[i..].to_vec();
+                        break;
+                    }
+                    let final_byte = input[i + 2];
+                    match final_byte {
+                        b'A' => {
+                            actions.push(self.make_vk_action(0x26, 0, 0)); // VK_UP
+                            i += 3;
+                        }
+                        b'B' => {
+                            actions.push(self.make_vk_action(0x28, 0, 0)); // VK_DOWN
+                            i += 3;
+                        }
+                        b'C' => {
+                            actions.push(self.make_vk_action(0x27, 0, 0)); // VK_RIGHT
+                            i += 3;
+                        }
+                        b'D' => {
+                            actions.push(self.make_vk_action(0x25, 0, 0)); // VK_LEFT
+                            i += 3;
+                        }
+                        b'H' => {
+                            actions.push(self.make_vk_action(0x24, 0, 0)); // VK_HOME
+                            i += 3;
+                        }
+                        b'F' => {
+                            actions.push(self.make_vk_action(0x23, 0, 0)); // VK_END
+                            i += 3;
+                        }
+                        b'P' => {
+                            actions.push(self.make_vk_action(0x70, 0, 0)); // VK_F1
+                            i += 3;
+                        }
+                        b'Q' => {
+                            actions.push(self.make_vk_action(0x71, 0, 0)); // VK_F2
+                            i += 3;
+                        }
+                        b'R' => {
+                            actions.push(self.make_vk_action(0x72, 0, 0)); // VK_F3
+                            i += 3;
+                        }
+                        b'S' => {
+                            actions.push(self.make_vk_action(0x73, 0, 0)); // VK_F4
+                            i += 3;
+                        }
+                        _ => {
+                            // Unknown SS3 — passthrough
+                            actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                            actions.extend(self.byte_to_actions(b'O'));
+                            actions.extend(self.byte_to_actions(final_byte));
+                            i += 3;
+                        }
+                    }
+                } else if next >= 0x20 && next <= 0x7E {
+                    // Alt+printable character
+                    let ch = next as char;
+                    let (vk, mut mods) = self.vkscan_char(ch);
+                    mods |= 0x0002; // LEFT_ALT_PRESSED
+                    actions.push(self.make_key_action(vk, next as u16, mods));
+                    i += 2;
+                } else {
+                    // ESC followed by non-printable — send ESC then the byte
+                    actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                    i += 1;
+                }
+            } else if b == 0x03 {
+                // Ctrl+C — check console mode
+                let processed = self.is_processed_input(conin);
+                if processed {
+                    actions.push(InputAction::GenerateCtrlC);
+                } else {
+                    // Raw mode — send as key event
+                    actions.push(self.make_key_action(
+                        b'C' as u16,
+                        0x03,
+                        0x0008, // LEFT_CTRL_PRESSED
+                    ));
+                }
+                i += 1;
+            } else {
+                actions.extend(self.byte_to_actions(b));
+                i += 1;
+            }
+        }
+
+        actions
+    }
+
+    fn is_processed_input(&self, conin: HANDLE) -> bool {
+        let mut mode = 0u32;
+        let result = unsafe { GetConsoleMode(conin, &mut mode) };
+        if result.is_ok() {
+            mode & ENABLE_PROCESSED_INPUT.0 != 0
+        } else {
+            true // default assumption: processed input
+        }
+    }
+
+    fn byte_to_actions(&self, b: u8) -> Vec<InputAction> {
+        match b {
+            0x0D => vec![self.make_vk_action(0x0D, b as u16, 0)], // VK_RETURN
+            0x0A => {
+                // Ctrl+J (NOT VK_RETURN)
+                vec![self.make_key_action(b'J' as u16, 0x0A, 0x0008)] // LEFT_CTRL_PRESSED
+            }
+            0x09 => vec![self.make_vk_action(0x09, b as u16, 0)], // VK_TAB
+            0x08 | 0x7F => vec![self.make_vk_action(0x08, 0x08, 0)], // VK_BACK
+            0x1B => vec![self.make_key_action(0x1b as u16, 0x1B, 0)], // VK_ESCAPE
+            0x1A => {
+                // Ctrl+Z
+                vec![self.make_key_action(b'Z' as u16, 0x1A, 0x0008)]
+            }
+            0x01..=0x02 | 0x04..=0x08 | 0x0B..=0x0C | 0x0E..=0x19 => {
+                // Other Ctrl+letter combinations
+                let letter = b'A' + (b - 1);
+                vec![self.make_key_action(letter as u16, b as u16, 0x0008)]
+            }
+            0x20..=0x7E => {
+                // Printable ASCII
+                self.char_to_actions(b as char)
+            }
+            _ => {
+                // High bytes — try to decode as UTF-8 start byte
+                // For individual bytes outside valid ranges, use VK_PACKET
+                vec![self.make_vk_packet_action(b as u16)]
+            }
+        }
+    }
+
+    fn char_to_actions(&self, ch: char) -> Vec<InputAction> {
+        let (vk, mods) = self.vkscan_char(ch);
+        if vk == 0xE7 {
+            // VK_PACKET fallback
+            self.vk_packet_for_char(ch)
+        } else {
+            vec![self.make_key_action(vk, ch as u16, mods)]
+        }
+    }
+
+    /// Uses VkKeyScanW to get VK code and modifier state for a character.
+    /// Returns (vk_code, dwControlKeyState). Returns (VK_PACKET, 0) on failure.
+    fn vkscan_char(&self, ch: char) -> (u16, u32) {
+        let result = unsafe { VkKeyScanW(ch as u16) };
+        if result as u16 == 0xFFFF {
+            return (0xE7, 0); // VK_PACKET
+        }
+        let vk = (result & 0xFF) as u16;
+        let shift_state = ((result >> 8) & 0xFF) as u8;
+        let mut mods = 0u32;
+        if shift_state & 1 != 0 {
+            mods |= 0x0010; // SHIFT_PRESSED
+        }
+        if shift_state & 2 != 0 {
+            mods |= 0x0008; // LEFT_CTRL_PRESSED
+        }
+        if shift_state & 4 != 0 {
+            mods |= 0x0002; // LEFT_ALT_PRESSED
+        }
+        (vk, mods)
+    }
+
+    fn vk_packet_for_char(&self, ch: char) -> Vec<InputAction> {
+        let mut buf = [0u16; 2];
+        let encoded = ch.encode_utf16(&mut buf);
+        encoded
+            .iter()
+            .map(|&u| self.make_vk_packet_action(u))
+            .collect()
+    }
+
+    fn make_vk_packet_action(&self, unicode_char: u16) -> InputAction {
+        let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
+        ke.wVirtualKeyCode = VIRTUAL_KEY(0xE7); // VK_PACKET
+        ke.wVirtualScanCode = 0;
+        ke.uChar.UnicodeChar = unicode_char;
+        ke.dwControlKeyState = 0;
+        ke.wRepeatCount = 1;
+        InputAction::KeyEvent(ke)
+    }
+
+    fn make_key_action(&self, vk: u16, unicode_char: u16, mods: u32) -> InputAction {
+        let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
+        let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
+        ke.wVirtualKeyCode = VIRTUAL_KEY(vk);
+        ke.wVirtualScanCode = scan;
+        ke.uChar.UnicodeChar = unicode_char;
+        ke.dwControlKeyState = mods;
+        ke.wRepeatCount = 1;
+        InputAction::KeyEvent(ke)
+    }
+
+    fn make_vk_action(&self, vk: u16, unicode_char: u16, mods: u32) -> InputAction {
+        self.make_key_action(vk, unicode_char, mods)
+    }
+
+    /// Parses modifier parameter value to dwControlKeyState flags.
+    fn modifier_to_flags(modifier: u8) -> u32 {
+        match modifier {
+            2 => 0x0010,                 // Shift
+            3 => 0x0002,                 // Alt
+            4 => 0x0002 | 0x0010,        // Alt+Shift
+            5 => 0x0008,                 // Ctrl
+            6 => 0x0008 | 0x0010,        // Ctrl+Shift
+            7 => 0x0008 | 0x0002,        // Ctrl+Alt
+            8 => 0x0008 | 0x0002 | 0x0010, // Ctrl+Alt+Shift
+            _ => 0,
+        }
+    }
+
+    fn parse_csi(&self, input: &[u8]) -> ParseResult {
+        // input starts with \x1b[
+        debug_assert!(input.len() >= 2 && input[0] == 0x1b && input[1] == b'[');
+
+        // Find the final byte (0x40-0x7E)
+        let mut param_end = 2;
+        while param_end < input.len() {
+            let b = input[param_end];
+            if (0x40..=0x7E).contains(&b) {
+                break;
+            }
+            if !(b.is_ascii_digit() || b == b';') {
+                // Invalid CSI parameter character
+                return ParseResult::Unrecognized(param_end + 1);
+            }
+            param_end += 1;
+        }
+
+        if param_end >= input.len() {
+            return ParseResult::Incomplete;
+        }
+
+        let final_byte = input[param_end];
+        let params_str = std::str::from_utf8(&input[2..param_end]).unwrap_or("");
+        let consumed = param_end + 1;
+
+        // Parse parameters
+        let params: Vec<&str> = if params_str.is_empty() {
+            vec![]
+        } else {
+            params_str.split(';').collect()
+        };
+
+        // Handle arrow keys: CSI A/B/C/D or CSI 1;mod A/B/C/D
+        match final_byte {
+            b'A' | b'B' | b'C' | b'D' => {
+                let vk = match final_byte {
+                    b'A' => 0x26u16, // VK_UP
+                    b'B' => 0x28,    // VK_DOWN
+                    b'C' => 0x27,    // VK_RIGHT
+                    b'D' => 0x25,    // VK_LEFT
+                    _ => unreachable!(),
+                };
+                let mods = self.extract_modifier(&params);
+                return ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed);
+            }
+            b'H' => {
+                // Home
+                let mods = self.extract_modifier(&params);
+                return ParseResult::Complete(vec![self.make_vk_action(0x24, 0, mods)], consumed);
+            }
+            b'F' => {
+                // End
+                let mods = self.extract_modifier(&params);
+                return ParseResult::Complete(vec![self.make_vk_action(0x23, 0, mods)], consumed);
+            }
+            b'P' | b'Q' | b'R' | b'S' => {
+                // F1-F4 (CSI form with modifier: CSI 1;mod P/Q/R/S)
+                let vk = match final_byte {
+                    b'P' => 0x70u16, // VK_F1
+                    b'Q' => 0x71,
+                    b'R' => 0x72,
+                    b'S' => 0x73,
+                    _ => unreachable!(),
+                };
+                let mods = self.extract_modifier(&params);
+                return ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed);
+            }
+            b'~' => {
+                // Tilde sequences: CSI num ~ or CSI num;mod ~
+                let num: u16 = params.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let mods = if params.len() >= 2 {
+                    params[1]
+                        .parse::<u8>()
+                        .ok()
+                        .map(Self::modifier_to_flags)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let vk = match num {
+                    2 => Some(0x2Du16),  // VK_INSERT
+                    3 => Some(0x2E),     // VK_DELETE
+                    5 => Some(0x21),     // VK_PRIOR (PgUp)
+                    6 => Some(0x22),     // VK_NEXT (PgDn)
+                    15 => Some(0x74),    // VK_F5
+                    17 => Some(0x75),    // VK_F6
+                    18 => Some(0x76),    // VK_F7
+                    19 => Some(0x77),    // VK_F8
+                    20 => Some(0x78),    // VK_F9
+                    21 => Some(0x79),    // VK_F10
+                    23 => Some(0x7A),    // VK_F11
+                    24 => Some(0x7B),    // VK_F12
+                    _ => None,
+                };
+                if let Some(vk) = vk {
+                    return ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed);
+                }
+                return ParseResult::Unrecognized(consumed);
+            }
+            _ => {
+                return ParseResult::Unrecognized(consumed);
+            }
+        }
+    }
+
+    fn extract_modifier(&self, params: &[&str]) -> u32 {
+        if params.len() >= 2 {
+            params[1]
+                .parse::<u8>()
+                .ok()
+                .map(Self::modifier_to_flags)
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(windows)]
+enum ParseResult {
+    Complete(Vec<InputAction>, usize), // actions, bytes consumed
+    Incomplete,
+    Unrecognized(usize), // bytes consumed
+}
+
+/// Expands a KEY_EVENT_RECORD into key-down + key-up INPUT_RECORD pair.
+#[cfg(windows)]
+fn expand_key_event(ke: &KEY_EVENT_RECORD) -> [INPUT_RECORD; 2] {
+    let mut down: INPUT_RECORD = unsafe { zeroed() };
+    down.EventType = 0x0001; // KEY_EVENT
+    unsafe {
+        let kd = down.Event.KeyEvent_mut();
+        kd.bKeyDown = windows::Win32::Foundation::BOOL(1);
+        kd.wRepeatCount = ke.wRepeatCount;
+        kd.wVirtualKeyCode = ke.wVirtualKeyCode;
+        kd.wVirtualScanCode = ke.wVirtualScanCode;
+        kd.uChar.UnicodeChar = ke.uChar.UnicodeChar;
+        kd.dwControlKeyState = ke.dwControlKeyState;
+    }
+
+    let mut up = down;
+    unsafe {
+        up.Event.KeyEvent_mut().bKeyDown = windows::Win32::Foundation::BOOL(0);
+    }
+
+    [down, up]
+}
+
+// ── ScrapePty struct ────────────────────────────────────────────────────
+
+#[cfg(windows)]
+struct ScrapePty {
+    child_pid: u32,
+    proc_handle: Option<OwnedHandle>,
+    thread_handle: Option<OwnedHandle>,
+    conout: SendHandle,
+    conin: SendHandle,
+    cols: u16,
+    rows: u16,
+    needs_cleanup: bool,
+}
+
+#[cfg(windows)]
+unsafe impl Send for ScrapePty {}
+
+#[cfg(windows)]
+impl Drop for ScrapePty {
+    fn drop(&mut self) {
+        if self.needs_cleanup {
+            unsafe {
+                if !self.conout.is_null() {
+                    let _ = windows::Win32::Foundation::CloseHandle(self.conout.to_handle());
+                }
+                if !self.conin.is_null() {
+                    let _ = windows::Win32::Foundation::CloseHandle(self.conin.to_handle());
+                }
+                if let Some(ref h) = self.proc_handle {
+                    let _ = TerminateProcess(HANDLE(h.as_raw_handle()), 1);
+                }
+                let _ = SetConsoleCtrlHandler(None, false);
+                let _ = FreeConsole();
+                let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+            }
+            SCRAPE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+/// RAII guard for console attachment during ScrapePty::new().
+#[cfg(windows)]
+struct ConsoleGuard {
+    detached: bool,
+    ctrl_handler_set: bool,
+}
+
+#[cfg(windows)]
+impl ConsoleGuard {
+    fn new() -> Self {
+        Self {
+            detached: false,
+            ctrl_handler_set: false,
+        }
+    }
+    fn mark_detached(&mut self) {
+        self.detached = true;
+    }
+    fn mark_ctrl_handler_set(&mut self) {
+        self.ctrl_handler_set = true;
+    }
+    fn disarm(self) {
+        std::mem::forget(self);
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConsoleGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if self.ctrl_handler_set {
+                let _ = SetConsoleCtrlHandler(None, false);
+            }
+            if self.detached {
+                let _ = FreeConsole();
+                let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+            }
+        }
+        SCRAPE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(windows)]
+impl ScrapePty {
+    fn new(winsize: Winsize, command: &str) -> Result<Self> {
+        use std::sync::atomic::Ordering;
+
+        // 1. Acquire single-instance lock
+        if SCRAPE_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            anyhow::bail!("only one scrape backend can be active at a time");
+        }
+
+        let mut guard = ConsoleGuard::new();
+
+        // 2. Verify stdio is pipe-backed (not console)
+        unsafe {
+            for &std_handle in &[STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let h = GetStdHandle(std_handle)?;
+                if h != INVALID_HANDLE_VALUE && !h.is_invalid() {
+                    let mut mode = 0u32;
+                    if GetConsoleMode(h, &mut mode).is_ok() {
+                        anyhow::bail!(
+                            "scrape backend requires redirected stdio (pipes or files).\n\
+                             It cannot be used from an interactive console.\n\
+                             Typical usage: orchestrator spawns `ht --backend scrape ...` with piped stdin/stdout."
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3. FreeConsole — detach from current console
+        let _ = unsafe { FreeConsole() };
+        guard.mark_detached();
+
+        // 4. CreateProcessW with CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP
+        assert!(
+            !command.is_empty(),
+            "command should not be empty; caller provides a default"
+        );
+        let mut cmd_wide: Vec<u16> = command
+            .encode_utf16()
+            .chain(std::iter::once(0u16))
+            .collect();
+        let cmd_pwstr = PWSTR(cmd_wide.as_mut_ptr());
+
+        let mut si: STARTUPINFOW = unsafe { zeroed() };
+        si.cb = size_of::<STARTUPINFOW>() as u32;
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE.0 as u16;
+
+        let mut proc_info: PROCESS_INFORMATION = unsafe { zeroed() };
+
+        unsafe {
+            CreateProcessW(
+                None,
+                cmd_pwstr,
+                None,
+                None,
+                false,
+                CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP,
+                None,
+                None,
+                &si,
+                &mut proc_info,
+            )
+        }?;
+
+        let child_pid = proc_info.dwProcessId;
+        let proc_handle =
+            Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _) });
+        let thread_handle =
+            Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _) });
+
+        // 5. Polling attach loop — retry AttachConsole every 50ms for up to 5s
+        let attach_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut attached = false;
+        while std::time::Instant::now() < attach_deadline {
+            // Check if child already exited
+            let wait_result =
+                unsafe { WaitForSingleObject(proc_info.hProcess, 0) };
+            if wait_result == WAIT_OBJECT_0 {
+                anyhow::bail!("child process exited before console was ready");
+            }
+            if unsafe { AttachConsole(child_pid) }.is_ok() {
+                attached = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !attached {
+            anyhow::bail!("failed to attach to child console after 5 seconds");
+        }
+
+        // 6. SetConsoleCtrlHandler — ignore Ctrl+C/Break in HT
+        unsafe { SetConsoleCtrlHandler(None, true) }?;
+        guard.mark_ctrl_handler_set();
+
+        // 7. Open CONOUT$ and CONIN$
+        let conout_name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        let conout = unsafe {
+            CreateFileW(
+                PCWSTR(conout_name.as_ptr()),
+                (GENERIC_READ.0 | GENERIC_WRITE.0).into(),
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                Default::default(),
+                None,
+            )
+        }?;
+        let conout_handle = SendHandle::from_handle(conout);
+
+        let conin_name: Vec<u16> = "CONIN$\0".encode_utf16().collect();
+        let conin = unsafe {
+            CreateFileW(
+                PCWSTR(conin_name.as_ptr()),
+                (GENERIC_READ.0 | GENERIC_WRITE.0).into(),
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                Default::default(),
+                None,
+            )
+        }?;
+        let conin_handle = SendHandle::from_handle(conin);
+
+        // 8. Enable VT processing
+        unsafe {
+            let mut mode = 0u32;
+            if GetConsoleMode(conout, &mut mode).is_ok() {
+                let _ = SetConsoleMode(
+                    conout,
+                    (mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0 | ENABLE_PROCESSED_OUTPUT.0)
+                        .into(),
+                );
+            }
+            let mut in_mode = 0u32;
+            if GetConsoleMode(conin, &mut in_mode).is_ok() {
+                let _ = SetConsoleMode(
+                    conin,
+                    (in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT.0).into(),
+                );
+            }
+        }
+
+        // 9. Apply terminal size — viewport = requested size, buffer height = maximum
+        let buf_width = (winsize.ws_col.min(i16::MAX as u16).max(1)) as i16;
+        let buf_height: i16 = i16::MAX;
+
+        unsafe {
+            // Shrink window to 1×1 (always valid)
+            let small = SMALL_RECT {
+                Left: 0,
+                Top: 0,
+                Right: 0,
+                Bottom: 0,
+            };
+            let _ = SetConsoleWindowInfo(conout, true, &small);
+
+            // Set buffer size
+            let _ = SetConsoleScreenBufferSize(
+                conout,
+                COORD {
+                    X: buf_width,
+                    Y: buf_height,
+                },
+            );
+
+            // Set viewport
+            let viewport = SMALL_RECT {
+                Left: 0,
+                Top: 0,
+                Right: buf_width - 1,
+                Bottom: (winsize.ws_row.min(i16::MAX as u16).max(1)) as i16 - 1,
+            };
+            let _ = SetConsoleWindowInfo(conout, true, &viewport);
+        }
+
+        // 10. Verify actual buffer size
+        let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
+        unsafe { GetConsoleScreenBufferInfo(conout, &mut csbi) }?;
+        let actual_cols = (csbi.srWindow.Right - csbi.srWindow.Left + 1) as u16;
+        let actual_rows = (csbi.srWindow.Bottom - csbi.srWindow.Top + 1) as u16;
+
+        // 11. Disarm guard — ownership transfers to ScrapePty
+        guard.disarm();
+
+        Ok(ScrapePty {
+            child_pid,
+            proc_handle,
+            thread_handle,
+            conout: conout_handle,
+            conin: conin_handle,
+            cols: actual_cols,
+            rows: actual_rows,
+            needs_cleanup: true,
+        })
+    }
+
+    async fn drive(
+        mut self,
+        input_rx: mpsc::Receiver<Vec<u8>>,
+        output_tx: mpsc::Sender<Vec<u8>>,
+        resize_rx: mpsc::Receiver<(u16, u16)>,
+        initial_input: Option<Vec<u8>>,
+    ) -> Result<()> {
+        let conout = self.conout;
+        let conin = self.conin;
+        let child_pid = self.child_pid;
+
+        // Take ownership of process/thread handles out of self.
+        // self.proc_handle becomes None, so Drop won't try to TerminateProcess.
+        // proc_owned keeps the OS handle alive; proc_send is the Send-safe copy
+        // for spawned tasks.  The handle is closed exactly once via drop(proc_owned).
+        let proc_owned = self
+            .proc_handle
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("proc_handle missing"))?;
+        let proc_send = SendHandle::from_handle(HANDLE(proc_owned.as_raw_handle()));
+        let thread_owned = self.thread_handle.take();
+
+        // Shared flag for signaling poll thread to stop
+        let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_flag_poll = stop_flag.clone();
+
+        // Screen poll thread (spawn_blocking)
+        let output_tx_poll = output_tx.clone();
+        let mut poll_handle = tokio::task::spawn_blocking(move || {
+            let mut prev_viewport: Vec<Vec<Cell>> = Vec::new();
+            let mut prev_sr_window_top: i16 = 0;
+            let mut first_poll = true;
+
+            while !stop_flag_poll.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+
+                let conout_h = conout.to_handle();
+
+                // Get current screen buffer info
+                let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
+                if unsafe { GetConsoleScreenBufferInfo(conout_h, &mut csbi) }.is_err() {
+                    break;
+                }
+
+                let sr = csbi.srWindow;
+                let viewport_width = (sr.Right - sr.Left + 1) as usize;
+                let viewport_height = (sr.Bottom - sr.Top + 1) as usize;
+
+                if viewport_width == 0 || viewport_height == 0 {
+                    continue;
+                }
+
+                let mut output_data = String::new();
+
+                // Scroll detection: recover scrolled-out rows
+                if !first_poll && sr.Top > prev_sr_window_top {
+                    let scroll_start = prev_sr_window_top;
+                    let scroll_end = sr.Top;
+                    let scroll_rows = (scroll_end - scroll_start) as usize;
+
+                    // Read scrolled-out rows from scrollback buffer
+                    let read_height = scroll_rows.min(8192);
+                    let mut scroll_buf =
+                        vec![
+                            unsafe { zeroed::<CHAR_INFO>() };
+                            viewport_width * read_height
+                        ];
+                    let scroll_size = COORD {
+                        X: viewport_width as i16,
+                        Y: read_height as i16,
+                    };
+                    let scroll_coord = COORD { X: 0, Y: 0 };
+                    let mut scroll_rect = SMALL_RECT {
+                        Left: sr.Left,
+                        Top: scroll_start,
+                        Right: sr.Right,
+                        Bottom: scroll_start + read_height as i16 - 1,
+                    };
+
+                    if unsafe {
+                        ReadConsoleOutputW(
+                            conout_h,
+                            scroll_buf.as_mut_ptr(),
+                            scroll_size,
+                            scroll_coord,
+                            &mut scroll_rect,
+                        )
+                    }
+                    .is_ok()
+                    {
+                        for row_idx in 0..read_height {
+                            let start = row_idx * viewport_width;
+                            let end = start + viewport_width;
+                            let row_cells = decode_char_info_row(&scroll_buf[start..end]);
+                            // Emit scrolled row with full color
+                            let mut last_attr: Option<u16> = None;
+                            for cell in &row_cells {
+                                if last_attr != Some(cell.attr) {
+                                    output_data.push_str(&attr_to_sgr(cell.attr));
+                                    last_attr = Some(cell.attr);
+                                }
+                                output_data.push(cell.ch);
+                            }
+                            output_data.push_str("\r\n");
+                        }
+                    }
+
+                    // Force full viewport redraw after scroll
+                    prev_viewport.clear();
+                }
+
+                prev_sr_window_top = sr.Top;
+
+                // Read current viewport via ReadConsoleOutputW
+                let mut buf = vec![unsafe { zeroed::<CHAR_INFO>() }; viewport_width * viewport_height];
+                let buf_size = COORD {
+                    X: viewport_width as i16,
+                    Y: viewport_height as i16,
+                };
+                let buf_coord = COORD { X: 0, Y: 0 };
+                let mut read_region = SMALL_RECT {
+                    Left: sr.Left,
+                    Top: sr.Top,
+                    Right: sr.Right,
+                    Bottom: sr.Bottom,
+                };
+
+                if unsafe {
+                    ReadConsoleOutputW(
+                        conout_h,
+                        buf.as_mut_ptr(),
+                        buf_size,
+                        buf_coord,
+                        &mut read_region,
+                    )
+                }
+                .is_err()
+                {
+                    break;
+                }
+
+                // Decode CHAR_INFO buffer into Cell grid
+                let mut curr_viewport: Vec<Vec<Cell>> = Vec::with_capacity(viewport_height);
+                for row_idx in 0..viewport_height {
+                    let start = row_idx * viewport_width;
+                    let end = start + viewport_width;
+                    curr_viewport.push(decode_char_info_row(&buf[start..end]));
+                }
+
+                // Convert cursor to 1-based ANSI coordinates
+                let cursor_row = (csbi.dwCursorPosition.Y - sr.Top + 1).max(1) as u16;
+                let cursor_col = (csbi.dwCursorPosition.X - sr.Left + 1).max(1) as u16;
+
+                // Diff and emit
+                let diff = diff_and_emit(
+                    &prev_viewport,
+                    &curr_viewport,
+                    cursor_row,
+                    cursor_col,
+                    viewport_width as u16,
+                );
+
+                output_data.push_str(&diff);
+
+                if !output_data.is_empty() {
+                    if output_tx_poll
+                        .blocking_send(output_data.into_bytes())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+
+                prev_viewport = curr_viewport;
+                first_poll = false;
+            }
+        });
+
+        // Input relay task (tokio::spawn — async for timeout support)
+        let conin_input = conin;
+        let mut input_relay = tokio::spawn(async move {
+            let mut parser = InputParser::new();
+            let mut input_rx = input_rx;
+            let conin_h = conin_input.to_handle();
+
+            // Handle initial input
+            if let Some(data) = initial_input {
+                let actions = parser.parse(&data, conin_h);
+                Self::dispatch_actions(&actions, conin_h, child_pid);
+            }
+
+            loop {
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(1000),
+                    input_rx.recv(),
+                )
+                .await;
+
+                match result {
+                    Ok(Some(data)) => {
+                        let actions = parser.parse(&data, conin_h);
+                        Self::dispatch_actions(&actions, conin_h, child_pid);
+                    }
+                    Ok(None) => {
+                        // Channel closed — flush pending
+                        if parser.has_pending() {
+                            let actions = parser.flush_pending();
+                            Self::dispatch_actions(&actions, conin_h, child_pid);
+                        }
+                        break;
+                    }
+                    Err(_timeout) => {
+                        if parser.has_pending() {
+                            let actions = parser.flush_pending();
+                            Self::dispatch_actions(&actions, conin_h, child_pid);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Resize task
+        let resize_conout = conout;
+        let resize_task = tokio::spawn(async move {
+            let mut resize_rx = resize_rx;
+            while let Some((new_cols, new_rows)) = resize_rx.recv().await {
+                let conout_h = resize_conout.to_handle();
+                let new_buf_width = (new_cols.min(i16::MAX as u16).max(1)) as i16;
+                let buf_height: i16 = i16::MAX;
+
+                unsafe {
+                    // Shrink to 1×1
+                    let small = SMALL_RECT {
+                        Left: 0,
+                        Top: 0,
+                        Right: 0,
+                        Bottom: 0,
+                    };
+                    let _ = SetConsoleWindowInfo(conout_h, true, &small);
+
+                    // New buffer size
+                    let _ = SetConsoleScreenBufferSize(
+                        conout_h,
+                        COORD {
+                            X: new_buf_width,
+                            Y: buf_height,
+                        },
+                    );
+
+                    // Get current top for viewport positioning
+                    let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = zeroed();
+                    let top = if GetConsoleScreenBufferInfo(conout_h, &mut csbi).is_ok() {
+                        csbi.srWindow.Top
+                    } else {
+                        0
+                    };
+
+                    let new_rows_i16 = (new_rows.min(i16::MAX as u16).max(1)) as i16;
+                    let viewport = SMALL_RECT {
+                        Left: 0,
+                        Top: top,
+                        Right: new_buf_width - 1,
+                        Bottom: top + new_rows_i16 - 1,
+                    };
+                    let _ = SetConsoleWindowInfo(conout_h, true, &viewport);
+                }
+            }
+        });
+
+        // Process wait thread
+        let mut wait_handle = tokio::task::spawn_blocking(move || unsafe {
+            WaitForSingleObject(proc_send.to_handle(), u32::MAX);
+        });
+
+        // Wait for any thread to finish
+        #[derive(PartialEq)]
+        enum Finished {
+            Poll,
+            Input,
+            Wait,
+        }
+        let finished = tokio::select! {
+            _ = &mut poll_handle => Finished::Poll,
+            _ = &mut input_relay => Finished::Input,
+            _ = &mut wait_handle => Finished::Wait,
+        };
+
+        // --- Cleanup sequence ---
+
+        // 1. Signal poll thread to stop and abort resize task
+        stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        resize_task.abort();
+
+        // 2. Terminate child if still alive (use proc_send — single owner)
+        {
+            let proc_raw = proc_send.to_handle();
+            let wait_result = unsafe { WaitForSingleObject(proc_raw, 0) };
+            if wait_result != WAIT_OBJECT_0 {
+                let _ = unsafe { TerminateProcess(proc_raw, 1) };
+                tokio::task::spawn_blocking(move || unsafe {
+                    WaitForSingleObject(proc_send.to_handle(), 5000);
+                })
+                .await?;
+            }
+        }
+
+        // 3. Await remaining threads (all must finish before closing handles)
+        if finished != Finished::Poll {
+            let _ = poll_handle.await;
+        }
+        if finished != Finished::Input {
+            input_relay.abort();
+            let _ = input_relay.await;
+        }
+        if finished != Finished::Wait {
+            let _ = wait_handle.await;
+        }
+        let _ = resize_task.await;
+
+        // 4. Close handles
+        unsafe {
+            if !self.conout.is_null() {
+                let _ = windows::Win32::Foundation::CloseHandle(self.conout.to_handle());
+                self.conout = SendHandle(0);
+            }
+            if !self.conin.is_null() {
+                let _ = windows::Win32::Foundation::CloseHandle(self.conin.to_handle());
+                self.conin = SendHandle(0);
+            }
+        }
+
+        // 5. Re-enable Ctrl+C
+        let _ = unsafe { SetConsoleCtrlHandler(None, false) };
+
+        // 6. Detach from child's console
+        let _ = unsafe { FreeConsole() };
+
+        // 7. Reattach to parent console
+        let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+
+        // 8. Cleanup complete
+        self.needs_cleanup = false;
+        SCRAPE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+
+        // Drop handles (proc_owned/thread_owned own the OS handles; closing happens here)
+        drop(proc_owned);
+        drop(thread_owned);
+
+        Ok(())
+    }
+
+    fn dispatch_actions(actions: &[InputAction], conin: HANDLE, child_pid: u32) {
+        for action in actions {
+            match action {
+                InputAction::KeyEvent(ke) => {
+                    let records = expand_key_event(ke);
+                    let mut written = 0u32;
+                    let _ = unsafe {
+                        WriteConsoleInputW(conin, &records, &mut written)
+                    };
+                }
+                InputAction::GenerateCtrlC => {
+                    let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, child_pid) };
+                }
+            }
+        }
+    }
+}
+
+// ── spawn_with_backend ──────────────────────────────────────────────────
+
+#[cfg(windows)]
+pub fn spawn_with_backend(
+    command: String,
+    winsize: Winsize,
+    input_rx: mpsc::Receiver<Vec<u8>>,
+    output_tx: mpsc::Sender<Vec<u8>>,
+    resize_rx: mpsc::Receiver<(u16, u16)>,
+    initial_input: Option<Vec<u8>>,
+    backend: crate::cli::Backend,
+) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send>>> {
+    match backend {
+        crate::cli::Backend::Conpty => {
+            let conpty = ConPty::new(winsize, &command)?;
+            Ok(Box::pin(conpty.drive(input_rx, output_tx, resize_rx, initial_input)))
+        }
+        crate::cli::Backend::Scrape => {
+            let scrape = ScrapePty::new(winsize, &command)?;
+            Ok(Box::pin(scrape.drive(input_rx, output_tx, resize_rx, initial_input)))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,5 +2416,334 @@ mod tests {
     #[test]
     fn no_env_var_paren_at_start() {
         assert!(!contains_env_var("%(x86)%"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod scrape_tests {
+    use super::*;
+
+    // ── attr_to_sgr ─────────────────────────────────────────────────
+
+    #[test]
+    fn attr_default_white_on_black() {
+        // Default console: white fg (RGB=111) = 0x07, black bg = 0x00
+        let sgr = attr_to_sgr(0x0007);
+        assert!(sgr.contains("37"), "expected white fg (37), got: {sgr}");
+        assert!(sgr.contains("40"), "expected black bg (40), got: {sgr}");
+    }
+
+    #[test]
+    fn attr_red_foreground() {
+        // Red fg = FOREGROUND_RED (0x04)
+        let sgr = attr_to_sgr(0x0004);
+        assert!(sgr.contains("31"), "expected red fg (31), got: {sgr}");
+    }
+
+    #[test]
+    fn attr_blue_background() {
+        // Blue bg = BACKGROUND_BLUE (0x10)
+        let sgr = attr_to_sgr(0x0017); // white fg + blue bg
+        assert!(sgr.contains("44"), "expected blue bg (44), got: {sgr}");
+    }
+
+    #[test]
+    fn attr_bright_green_foreground() {
+        // Bright green = GREEN(0x02) | INTENSITY(0x08)
+        let sgr = attr_to_sgr(0x000A);
+        assert!(sgr.contains("92"), "expected bright green fg (92), got: {sgr}");
+    }
+
+    #[test]
+    fn attr_reverse_video() {
+        let sgr = attr_to_sgr(0x4007); // COMMON_LVB_REVERSE_VIDEO | white on black
+        assert!(sgr.contains(";7"), "expected reverse video (;7), got: {sgr}");
+    }
+
+    #[test]
+    fn attr_underscore() {
+        let sgr = attr_to_sgr(0x8007); // COMMON_LVB_UNDERSCORE | white on black
+        assert!(sgr.contains(";4"), "expected underline (;4), got: {sgr}");
+    }
+
+    #[test]
+    fn attr_combined_reverse_underline() {
+        let sgr = attr_to_sgr(0xC004); // REVERSE + UNDERSCORE + red fg
+        assert!(sgr.contains(";7"), "expected reverse, got: {sgr}");
+        assert!(sgr.contains(";4"), "expected underline, got: {sgr}");
+        assert!(sgr.contains("31"), "expected red fg, got: {sgr}");
+    }
+
+    // ── diff_and_emit ───────────────────────────────────────────────
+
+    #[test]
+    fn diff_first_frame_emits_all() {
+        let row = vec![
+            Cell { ch: 'A', width: 1, attr: 0x07 },
+            Cell { ch: 'B', width: 1, attr: 0x07 },
+        ];
+        let curr = vec![row];
+        let result = diff_and_emit(&[], &curr, 1, 1, 2);
+        assert!(result.contains('A'), "should contain 'A': {result}");
+        assert!(result.contains('B'), "should contain 'B': {result}");
+        // Should have cursor positioning
+        assert!(result.contains("\x1b[1;1H"), "should position cursor: {result}");
+    }
+
+    #[test]
+    fn diff_no_change_emits_cursor_only() {
+        let row = vec![Cell { ch: 'X', width: 1, attr: 0x07 }];
+        let viewport = vec![row.clone()];
+        let result = diff_and_emit(&viewport, &viewport, 1, 1, 1);
+        // Should only contain cursor positioning, not 'X'
+        assert!(!result.contains('X'), "unchanged row should not re-emit: {result}");
+    }
+
+    #[test]
+    fn diff_changed_row_has_erase() {
+        let old = vec![vec![Cell { ch: 'A', width: 1, attr: 0x07 }]];
+        let new = vec![vec![Cell { ch: 'B', width: 1, attr: 0x07 }]];
+        let result = diff_and_emit(&old, &new, 1, 1, 3);
+        assert!(result.contains('B'), "should contain new char: {result}");
+        assert!(result.contains("\x1b[K"), "should have erase-to-end: {result}");
+    }
+
+    #[test]
+    fn diff_cursor_position_1based() {
+        let row = vec![Cell { ch: ' ', width: 1, attr: 0x07 }];
+        let viewport = vec![row];
+        let result = diff_and_emit(&viewport, &viewport, 3, 5, 1);
+        assert!(result.contains("\x1b[3;5H"), "cursor should be at row 3 col 5: {result}");
+    }
+
+    // ── InputParser ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_printable_ascii() {
+        let parser = InputParser::new();
+        let actions = parser.byte_to_actions(b'a');
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(unsafe { ke.uChar.UnicodeChar }, b'a' as u16);
+                assert_eq!(ke.wRepeatCount, 1);
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_enter() {
+        let parser = InputParser::new();
+        let actions = parser.byte_to_actions(0x0D);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x0D)); // VK_RETURN
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_ctrl_z() {
+        let parser = InputParser::new();
+        let actions = parser.byte_to_actions(0x1A);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(b'Z' as u16));
+                assert_eq!(ke.dwControlKeyState & 0x0008, 0x0008); // LEFT_CTRL_PRESSED
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_arrow_keys_csi() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        let actions = parser.parse(b"\x1b[A", conin);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_arrow_keys_ss3() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        let actions = parser.parse(b"\x1bOA", conin);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_ctrl_up_modifier() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        let actions = parser.parse(b"\x1b[1;5A", conin); // Ctrl+Up
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.dwControlKeyState & 0x0008, 0x0008); // LEFT_CTRL_PRESSED
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_ctrl_alt_up_modifier() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        let actions = parser.parse(b"\x1b[1;7A", conin); // Ctrl+Alt+Up
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.dwControlKeyState & 0x0008, 0x0008); // LEFT_CTRL_PRESSED
+                assert_eq!(ke.dwControlKeyState & 0x0002, 0x0002); // LEFT_ALT_PRESSED
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_function_keys() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+
+        // F5 = \x1b[15~
+        let actions = parser.parse(b"\x1b[15~", conin);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x74)); // VK_F5
+            }
+            _ => panic!("expected KeyEvent for F5"),
+        }
+
+        // F12 = \x1b[24~
+        let actions = parser.parse(b"\x1b[24~", conin);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x7B)); // VK_F12
+            }
+            _ => panic!("expected KeyEvent for F12"),
+        }
+    }
+
+    #[test]
+    fn parse_standalone_escape() {
+        let parser = InputParser::new();
+        let actions = parser.byte_to_actions(0x1B);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(unsafe { ke.uChar.UnicodeChar }, 0x1B);
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_alt_letter() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        let actions = parser.parse(b"\x1bf", conin); // Alt+f
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.dwControlKeyState & 0x0002, 0x0002); // LEFT_ALT_PRESSED
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn expand_key_event_produces_down_up() {
+        let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
+        ke.wVirtualKeyCode = VIRTUAL_KEY(0x41); // 'A'
+        ke.wRepeatCount = 1;
+        ke.uChar.UnicodeChar = b'a' as u16;
+        let records = expand_key_event(&ke);
+        assert_eq!(records.len(), 2);
+        // First is key-down
+        unsafe {
+            assert_eq!(records[0].Event.KeyEvent().bKeyDown.0, 1);
+            assert_eq!(records[1].Event.KeyEvent().bKeyDown.0, 0);
+        }
+    }
+
+    #[test]
+    fn parse_cross_chunk_buffering() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+
+        // First chunk: just ESC
+        let actions1 = parser.parse(b"\x1b", conin);
+        assert!(actions1.is_empty(), "ESC alone should be buffered");
+        assert!(parser.has_pending());
+
+        // Second chunk: completes the sequence
+        let actions2 = parser.parse(b"[A", conin);
+        assert_eq!(actions2.len(), 1);
+        match &actions2[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+        assert!(!parser.has_pending());
+    }
+
+    #[test]
+    fn flush_pending_emits_esc() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+
+        // Buffer an ESC
+        let _ = parser.parse(b"\x1b", conin);
+        assert!(parser.has_pending());
+
+        let actions = parser.flush_pending();
+        assert!(!actions.is_empty());
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(unsafe { ke.uChar.UnicodeChar }, 0x1B);
+            }
+            _ => panic!("expected ESC KeyEvent"),
+        }
+        assert!(!parser.has_pending());
+    }
+
+    // ── decode_char_info_row ────────────────────────────────────────
+
+    #[test]
+    fn decode_simple_ascii_row() {
+        let mut ci: CHAR_INFO = unsafe { zeroed() };
+        ci.Char.UnicodeChar = b'H' as u16;
+        ci.Attributes = 0x07;
+
+        let mut ci2: CHAR_INFO = unsafe { zeroed() };
+        ci2.Char.UnicodeChar = b'i' as u16;
+        ci2.Attributes = 0x07;
+
+        let cells = decode_char_info_row(&[ci, ci2]);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].ch, 'H');
+        assert_eq!(cells[0].width, 1);
+        assert_eq!(cells[1].ch, 'i');
     }
 }

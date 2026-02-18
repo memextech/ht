@@ -167,3 +167,59 @@ mod windows {
         }
     }
 }
+
+#[cfg(windows)]
+mod windows_scrape {
+    use std::process::Stdio;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::time::timeout;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shell_prompt_appears_via_scrape() {
+        // Build the binary path (cargo test puts it in target/debug/)
+        let bin = env!("CARGO_BIN_EXE_ht");
+
+        let mut child = tokio::process::Command::new(bin)
+            .args(["--backend", "scrape", "cmd.exe", "/k", "prompt", "TEST_PROMPT$G$S"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn ht");
+
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut stdin = child.stdin.take().unwrap();
+
+        // Read JSON lines from HT's stdout, look for the prompt marker
+        let prompt_marker = "TEST_PROMPT>";
+        let mut found = false;
+        let deadline = Duration::from_secs(15);
+        let result = timeout(deadline, async {
+            while let Ok(Some(line)) = stdout.next_line().await {
+                if line.contains(prompt_marker) {
+                    found = true;
+                    break;
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            found,
+            "Prompt not found within deadline: {result:?}"
+        );
+
+        // Send exit command via HT's JSON input API, then close stdin
+        let exit_msg = r#"{"type":"input","payload":"exit\r\n"}"#;
+        let _ = stdin.write_all(exit_msg.as_bytes()).await;
+        let _ = stdin.write_all(b"\n").await;
+        drop(stdin);
+
+        let status = timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("ht process timed out")
+            .expect("failed to wait on ht");
+        assert!(status.success(), "ht exited with: {status}");
+    }
+}
