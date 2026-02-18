@@ -174,9 +174,11 @@ jobs:
         name: ht-windows-x86_64
         path: ${{ steps.find_binary.outputs.binary_path }}
 
-  # WinPTY probe: test whether WinPTY works in GitHub Actions'
-  # non-interactive session (ConPTY does not — microsoft/terminal#13914).
-  winpty-probe:
+  # Console probe: test whether a hidden-console + screen-scraping approach
+  # (the technique WinPTY uses) works in GitHub Actions' non-interactive
+  # session.  ConPTY does not work here (microsoft/terminal#13914).
+  # Uses raw Windows APIs only — no external DLLs required.
+  console-probe:
     runs-on: windows-latest
     continue-on-error: true
 
@@ -188,66 +190,11 @@ jobs:
       with:
         targets: x86_64-pc-windows-msvc
 
-    - name: Download WinPTY 0.4.3 binaries
-      shell: powershell
-      run: |
-        $url = "https://github.com/rprichard/winpty/releases/download/0.4.3/winpty-0.4.3-msvc2015.zip"
-        $zip = "$env:RUNNER_TEMP\winpty.zip"
-        $dest = "$env:RUNNER_TEMP\winpty"
-        Write-Host "Downloading WinPTY from $url ..."
-        Invoke-WebRequest -Uri $url -OutFile $zip
-        Expand-Archive -Path $zip -DestinationPath $dest -Force
-        Write-Host "Extracted to $dest"
-        Get-ChildItem $dest -Recurse | Format-Table FullName, Length
-
-    - name: Set WinPTY environment
-      shell: powershell
-      run: |
-        $binDir = "$env:RUNNER_TEMP\winpty\x64\bin"
-        $libDir = "$env:RUNNER_TEMP\winpty\x64\lib"
-        Write-Host "WinPTY bin: $binDir"
-        Write-Host "WinPTY lib: $libDir"
-        # Verify files exist
-        Get-ChildItem $binDir
-        Get-ChildItem $libDir
-        # Add to PATH and LIB for build + runtime
-        "$binDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Build WinPTY probe
-      shell: cmd
-      working-directory: tests/winpty-probe
-      run: cargo build --release
-
-    - name: Diagnose probe dependencies
-      shell: powershell
-      working-directory: tests/winpty-probe
-      run: |
-        $ErrorActionPreference = 'Continue'
-        Write-Host "=== Probe exe dependencies ==="
-        $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        $vsInstall = & $vsWhere -latest -property installationPath 2>$null
-        $dumpbin = Get-ChildItem "$vsInstall" -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($dumpbin) {
-          & $dumpbin.FullName /DEPENDENTS target\release\winpty-probe.exe
-        } else {
-          Write-Host "(dumpbin not found, skipping dependency listing)"
-        }
-        Write-Host ""
-        Write-Host "=== WinPTY x64 bin contents ==="
-        Get-ChildItem "$env:RUNNER_TEMP\winpty\x64\bin" | Format-Table Name, Length
-        Write-Host ""
-        Write-Host "=== target\release contents ==="
-        Get-ChildItem target\release\*.dll -ErrorAction SilentlyContinue | Format-Table Name, Length
-        Get-ChildItem target\release\*.exe -ErrorAction SilentlyContinue | Format-Table Name, Length
-
-    - name: Run WinPTY probe
+    - name: Build and run console probe
       shell: cmd
       working-directory: tests/winpty-probe
       run: |
-        copy "%RUNNER_TEMP%\winpty\x64\bin\*.*" target\release\
-        set PATH=target\release;%RUNNER_TEMP%\winpty\x64\bin;%PATH%
-        target\release\winpty-probe.exe
+        cargo run --release
         exit /b %ERRORLEVEL%
 
   # Summary job to check all platforms passed
