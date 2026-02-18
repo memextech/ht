@@ -214,15 +214,18 @@ jobs:
         "$binDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-    - name: Build and run WinPTY probe
+    - name: Build WinPTY probe
+      shell: cmd
+      working-directory: tests/winpty-probe
+      run: cargo build --release
+
+    - name: Run WinPTY probe
       shell: cmd
       working-directory: tests/winpty-probe
       run: |
-        set PATH=%RUNNER_TEMP%\winpty\x64\bin;%PATH%
-        echo Building winpty-probe...
-        cargo run --release
-        echo.
-        echo Probe exit code: %ERRORLEVEL%
+        copy "%RUNNER_TEMP%\winpty\x64\bin\winpty.dll" target\release\
+        copy "%RUNNER_TEMP%\winpty\x64\bin\winpty-agent.exe" target\release\
+        target\release\winpty-probe.exe
         exit /b %ERRORLEVEL%
 
   # Summary job to check all platforms passed
