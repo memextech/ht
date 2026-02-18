@@ -223,24 +223,21 @@ jobs:
       shell: powershell
       working-directory: tests/winpty-probe
       run: |
+        $ErrorActionPreference = 'Continue'
         Write-Host "=== Probe exe dependencies ==="
-        & "dumpbin" /DEPENDENTS target\release\winpty-probe.exe 2>$null
-        if ($LASTEXITCODE -ne 0) {
-          Write-Host "(dumpbin not on PATH, trying via VS Developer tools)"
-          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = & $vsWhere -latest -property installationPath
-          $dumpbin = Get-ChildItem "$vsInstall" -Recurse -Filter "dumpbin.exe" | Select-Object -First 1
-          if ($dumpbin) {
-            & $dumpbin.FullName /DEPENDENTS target\release\winpty-probe.exe
-          } else {
-            Write-Host "(dumpbin not found)"
-          }
+        $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsInstall = & $vsWhere -latest -property installationPath 2>$null
+        $dumpbin = Get-ChildItem "$vsInstall" -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($dumpbin) {
+          & $dumpbin.FullName /DEPENDENTS target\release\winpty-probe.exe
+        } else {
+          Write-Host "(dumpbin not found, skipping dependency listing)"
         }
         Write-Host ""
         Write-Host "=== WinPTY x64 bin contents ==="
         Get-ChildItem "$env:RUNNER_TEMP\winpty\x64\bin" | Format-Table Name, Length
         Write-Host ""
-        Write-Host "=== target\release DLL files ==="
+        Write-Host "=== target\release contents ==="
         Get-ChildItem target\release\*.dll -ErrorAction SilentlyContinue | Format-Table Name, Length
         Get-ChildItem target\release\*.exe -ErrorAction SilentlyContinue | Format-Table Name, Length
 
