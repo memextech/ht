@@ -43,7 +43,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     use std::thread;
     use std::time::Duration;
 
-    use windows::core::PWSTR;
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::*;
     use windows::Win32::Storage::FileSystem::*;
     use windows::Win32::System::Console::*;
