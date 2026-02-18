@@ -203,10 +203,8 @@ jobs:
     - name: Set WinPTY environment
       shell: powershell
       run: |
-        # Find the extracted directories (x64 build)
-        $base = Get-ChildItem "$env:RUNNER_TEMP\winpty" -Directory | Select-Object -First 1
-        $binDir = Join-Path $base.FullName "x64\bin"
-        $libDir = Join-Path $base.FullName "x64\lib"
+        $binDir = "$env:RUNNER_TEMP\winpty\x64\bin"
+        $libDir = "$env:RUNNER_TEMP\winpty\x64\lib"
         Write-Host "WinPTY bin: $binDir"
         Write-Host "WinPTY lib: $libDir"
         # Verify files exist
