@@ -45,6 +45,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
 
     use windows::core::PWSTR;
     use windows::Win32::Foundation::*;
+    use windows::Win32::Storage::FileSystem::*;
     use windows::Win32::System::Console::*;
     use windows::Win32::System::Threading::*;
 
@@ -115,7 +116,20 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
 
     println!("[4/5] Reading console screen buffer...");
 
-    let console_out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE)? };
+    // Open CONOUT$ to get the attached console's screen buffer.
+    // GetStdHandle would return our original pipe handle, not the console.
+    let conout: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+    let console_out = unsafe {
+        CreateFileW(
+            PCWSTR(conout.as_ptr()),
+            GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )?
+    };
 
     let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
     unsafe { GetConsoleScreenBufferInfo(console_out, &mut info)? };
@@ -169,8 +183,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
 
     println!("[5/5] Cleaning up...");
 
-    let _ = unsafe { FreeConsole() };
     unsafe {
+        let _ = CloseHandle(console_out);
+        let _ = FreeConsole();
         let _ = TerminateProcess(pi.hProcess, 0);
         WaitForSingleObject(pi.hProcess, 5000);
         let _ = CloseHandle(pi.hProcess);
