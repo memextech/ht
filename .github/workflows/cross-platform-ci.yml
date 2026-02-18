@@ -215,15 +215,14 @@ jobs:
         "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     - name: Build and run WinPTY probe
-      shell: powershell
+      shell: cmd
       working-directory: tests/winpty-probe
       run: |
-        Write-Host "Building winpty-probe..."
-        cargo run --release 2>&1
-        $exitCode = $LASTEXITCODE
-        Write-Host ""
-        Write-Host "Probe exit code: $exitCode"
-        exit $exitCode
+        echo Building winpty-probe...
+        cargo run --release
+        echo.
+        echo Probe exit code: %ERRORLEVEL%
+        exit /b %ERRORLEVEL%
 
   # Summary job to check all platforms passed
   cross-platform-summary:
