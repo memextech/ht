@@ -428,16 +428,6 @@ struct Cell {
     attr: u16,
 }
 
-#[cfg(windows)]
-impl Cell {
-    fn blank() -> Self {
-        Cell {
-            ch: ' ',
-            width: 1,
-            attr: 0x07, // default: white on black
-        }
-    }
-}
 
 /// Converts a Windows console attribute word to an ANSI SGR escape sequence.
 #[cfg(windows)]
@@ -665,7 +655,7 @@ impl InputParser {
         while i < pending.len() {
             let b = pending[i];
             if b == 0x1b {
-                actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                actions.push(self.make_key_action(0x1b_u16, 0x1b, 0));
                 i += 1;
             } else if b >= 0x80 {
                 let seq_len = utf8_seq_len(b);
@@ -723,7 +713,7 @@ impl InputParser {
                         }
                         ParseResult::Unrecognized(consumed) => {
                             // Passthrough: ESC as VK_ESCAPE, then remaining bytes
-                            actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                            actions.push(self.make_key_action(0x1b_u16, 0x1b, 0));
                             for &pb in &input[i + 1..i + consumed] {
                                 actions.extend(self.byte_to_actions(pb));
                             }
@@ -780,13 +770,13 @@ impl InputParser {
                         }
                         _ => {
                             // Unknown SS3 — passthrough
-                            actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                            actions.push(self.make_key_action(0x1b_u16, 0x1b, 0));
                             actions.extend(self.byte_to_actions(b'O'));
                             actions.extend(self.byte_to_actions(final_byte));
                             i += 3;
                         }
                     }
-                } else if next >= 0x20 && next <= 0x7E {
+                } else if (0x20..=0x7E).contains(&next) {
                     // Alt+printable character
                     let ch = next as char;
                     let (vk, mut mods) = self.vkscan_char(ch);
@@ -795,7 +785,7 @@ impl InputParser {
                     i += 2;
                 } else {
                     // ESC followed by non-printable — send ESC then the byte
-                    actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                    actions.push(self.make_key_action(0x1b_u16, 0x1b, 0));
                     i += 1;
                 }
             } else if b == 0x03 {
@@ -866,7 +856,7 @@ impl InputParser {
             }
             0x09 => vec![self.make_vk_action(0x09, b as u16, 0)], // VK_TAB
             0x08 | 0x7F => vec![self.make_vk_action(0x08, 0x08, 0)], // VK_BACK
-            0x1B => vec![self.make_key_action(0x1b as u16, 0x1B, 0)], // VK_ESCAPE
+            0x1B => vec![self.make_key_action(0x1b_u16, 0x1B, 0)], // VK_ESCAPE
             0x1A => {
                 // Ctrl+Z
                 vec![self.make_key_action(b'Z' as u16, 0x1A, 0x0008)]
@@ -1011,17 +1001,17 @@ impl InputParser {
                     _ => unreachable!(),
                 };
                 let mods = self.extract_modifier(&params);
-                return ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed);
+                ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed)
             }
             b'H' => {
                 // Home
                 let mods = self.extract_modifier(&params);
-                return ParseResult::Complete(vec![self.make_vk_action(0x24, 0, mods)], consumed);
+                ParseResult::Complete(vec![self.make_vk_action(0x24, 0, mods)], consumed)
             }
             b'F' => {
                 // End
                 let mods = self.extract_modifier(&params);
-                return ParseResult::Complete(vec![self.make_vk_action(0x23, 0, mods)], consumed);
+                ParseResult::Complete(vec![self.make_vk_action(0x23, 0, mods)], consumed)
             }
             b'P' | b'Q' | b'R' | b'S' => {
                 // F1-F4 (CSI form with modifier: CSI 1;mod P/Q/R/S)
@@ -1033,7 +1023,7 @@ impl InputParser {
                     _ => unreachable!(),
                 };
                 let mods = self.extract_modifier(&params);
-                return ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed);
+                ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed)
             }
             b'~' => {
                 // Tilde sequences: CSI num ~ or CSI num;mod ~
@@ -1063,13 +1053,12 @@ impl InputParser {
                     _ => None,
                 };
                 if let Some(vk) = vk {
-                    return ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed);
+                    ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed)
+                } else {
+                    ParseResult::Unrecognized(consumed)
                 }
-                return ParseResult::Unrecognized(consumed);
             }
-            _ => {
-                return ParseResult::Unrecognized(consumed);
-            }
+            _ => ParseResult::Unrecognized(consumed),
         }
     }
 
@@ -1120,8 +1109,8 @@ struct ScrapePty {
     thread_handle: Option<OwnedHandle>,
     conout: SendHandle,
     conin: SendHandle,
-    cols: u16,
-    rows: u16,
+    _cols: u16,
+    _rows: u16,
     needs_cleanup: bool,
 }
 
@@ -1296,7 +1285,7 @@ impl ScrapePty {
         let conout = unsafe {
             CreateFileW(
                 PCWSTR(conout_name.as_ptr()),
-                (GENERIC_READ.0 | GENERIC_WRITE.0).into(),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
@@ -1310,7 +1299,7 @@ impl ScrapePty {
         let conin = unsafe {
             CreateFileW(
                 PCWSTR(conin_name.as_ptr()),
-                (GENERIC_READ.0 | GENERIC_WRITE.0).into(),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
@@ -1383,8 +1372,8 @@ impl ScrapePty {
             thread_handle,
             conout: conout_handle,
             conin: conin_handle,
-            cols: actual_cols,
-            rows: actual_rows,
+            _cols: actual_cols,
+            _rows: actual_rows,
             needs_cleanup: true,
         })
     }
@@ -1551,13 +1540,12 @@ impl ScrapePty {
 
                 output_data.push_str(&diff);
 
-                if !output_data.is_empty() {
-                    if output_tx_poll
+                if !output_data.is_empty()
+                    && output_tx_poll
                         .blocking_send(output_data.into_bytes())
                         .is_err()
-                    {
-                        break;
-                    }
+                {
+                    break;
                 }
 
                 prev_viewport = curr_viewport;
