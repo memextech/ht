@@ -173,30 +173,6 @@ jobs:
       with:
         name: ht-windows-x86_64
         path: ${{ steps.find_binary.outputs.binary_path }}
-
-  # Console probe: test whether a hidden-console + screen-scraping approach
-  # (the technique WinPTY uses) works in GitHub Actions' non-interactive
-  # session.  ConPTY does not work here (microsoft/terminal#13914).
-  # Uses raw Windows APIs only — no external DLLs required.
-  console-probe:
-    runs-on: windows-latest
-    continue-on-error: true
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: x86_64-pc-windows-msvc
-
-    - name: Build and run console probe
-      shell: cmd
-      working-directory: tests/winpty-probe
-      run: |
-        cargo run --release
-        exit /b %ERRORLEVEL%
-
   # Summary job to check all platforms passed
   cross-platform-summary:
     needs: [unix-build, windows-build]
