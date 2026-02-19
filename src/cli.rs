@@ -4,14 +4,6 @@ use anyhow::bail;
 use clap::Parser;
 use std::{fmt::Display, net::SocketAddr, ops::Deref, str::FromStr};
 
-#[cfg(windows)]
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
-pub enum Backend {
-    #[default]
-    Conpty,
-    Scrape,
-}
-
 #[derive(Debug, Parser)]
 #[clap(version, about)]
 #[command(name = "ht")]
@@ -32,11 +24,6 @@ pub struct Cli {
     /// Subscribe to events
     #[arg(long, value_name = "EVENTS")]
     pub subscribe: Option<Subscription>,
-
-    /// PTY backend (scrape is a CI fallback with limited input fidelity; requires piped stdio)
-    #[cfg(windows)]
-    #[arg(long, value_enum, default_value = "conpty")]
-    pub backend: Backend,
 }
 
 impl Default for Cli {

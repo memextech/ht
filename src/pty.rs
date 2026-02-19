@@ -1,7 +1,5 @@
 use anyhow::Result;
 use std::future::Future;
-#[cfg(windows)]
-use std::pin::Pin;
 use tokio::sync::mpsc;
 
 // Platform-specific imports and implementations
@@ -41,19 +39,11 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
 use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 #[cfg(windows)]
-use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-#[cfg(windows)]
-use windows::Win32::System::Console::{
-    COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
-};
-#[cfg(windows)]
-use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::Console::COORD;
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    CreateProcessW, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, PROCESS_INFORMATION,
+    STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 #[cfg(windows)]
 use windows::core::PWSTR;
@@ -64,10 +54,10 @@ use windows::Win32::System::Console::{
     AttachConsole, FreeConsole, GetConsoleMode, GetConsoleScreenBufferInfo, ReadConsoleOutputW,
     SetConsoleCtrlHandler, SetConsoleMode, SetConsoleScreenBufferSize, SetConsoleWindowInfo,
     WriteConsoleInputW, GenerateConsoleCtrlEvent, GetStdHandle,
-    ATTACH_PARENT_PROCESS, CHAR_INFO, CONSOLE_SCREEN_BUFFER_INFO, CREATE_NEW_CONSOLE,
-    CREATE_NEW_PROCESS_GROUP, CTRL_C_EVENT, ENABLE_PROCESSED_INPUT,
+    ATTACH_PARENT_PROCESS, CHAR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
+    CTRL_C_EVENT, ENABLE_PROCESSED_INPUT,
     ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    INPUT_RECORD, KEY_EVENT_RECORD, SMALL_RECT, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+    INPUT_RECORD, KEY_EVENT_RECORD, SMALL_RECT, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE,
 };
 #[cfg(windows)]
@@ -78,7 +68,7 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Threading::STARTF_USESHOWWINDOW;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, VkKeyScanW, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+    MapVirtualKeyW, VkKeyScanW, MAPVK_VK_TO_VSC,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
@@ -89,13 +79,12 @@ use windows::Win32::Foundation::GENERIC_READ;
 #[cfg(windows)]
 use windows::Win32::Foundation::GENERIC_WRITE;
 
-/// A `Send`-safe wrapper for Windows handles (`HANDLE` / `HPCON`).
+/// A `Send`-safe wrapper for Windows `HANDLE`.
 ///
 /// In the `windows` 0.58.0 crate `HANDLE` wraps `*mut c_void` (which is
-/// `!Send`), while `HPCON` still wraps `isize`.  Windows handles are plain
-/// integer-like tokens that are safe to use from any thread, so we store
-/// the value as a single `isize` (which *is* `Send`) and reconstruct the
-/// original type on demand.
+/// `!Send`).  Windows handles are plain integer-like tokens that are safe
+/// to use from any thread, so we store the value as a single `isize`
+/// (which *is* `Send`) and reconstruct the original type on demand.
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 struct SendHandle(isize);
@@ -110,12 +99,6 @@ impl SendHandle {
     }
     fn to_handle(self) -> HANDLE {
         HANDLE(self.0 as *mut c_void)
-    }
-    fn from_hpcon(h: HPCON) -> Self {
-        Self(h.0)
-    }
-    fn to_hpcon(self) -> HPCON {
-        HPCON(self.0)
     }
     fn is_null(self) -> bool {
         self.0 == 0
@@ -288,61 +271,6 @@ fn exec(command: String) -> io::Result<()> {
 }
 
 // Windows implementation
-#[cfg(windows)]
-const READ_BUF_SIZE: usize = 128 * 1024;
-
-#[cfg(windows)]
-struct ConPty {
-    hpc: HPCON,
-    input_write: Option<OwnedHandle>,
-    output_read: Option<OwnedHandle>,
-    proc_handle: Option<OwnedHandle>,
-    thread_handle: Option<OwnedHandle>,
-    attr_list_buf: Vec<u8>,
-}
-
-#[cfg(windows)]
-// Safety: The only non-Send field is HPCON (wraps isize; the windows crate
-// does not impl Send for it). Windows console handles are plain integer tokens
-// that are safe to use from any thread. All other fields (OwnedHandle, Vec<u8>)
-// are already Send.
-unsafe impl Send for ConPty {}
-
-#[cfg(windows)]
-impl Drop for ConPty {
-    fn drop(&mut self) {
-        // 1. Close input_write if still held (not yet taken by write thread).
-        drop(self.input_write.take());
-
-        // 2. ClosePseudoConsole — only if drive() didn't already do it.
-        //    drive() zeroes hpc after calling ClosePseudoConsole in spawn_blocking.
-        //    In the abort path (Drop called without drive() completing),
-        //    we must call it here.
-        if self.hpc.0 != 0 {
-            unsafe {
-                ClosePseudoConsole(self.hpc);
-            }
-        }
-
-        // 3. Close output_read if still held (not yet taken by read thread).
-        //    In the normal path, drive() moves output_read into the read thread.
-        //    In the abort path, this closes it here.
-        drop(self.output_read.take());
-
-        // 4. proc_handle, thread_handle (OwnedHandle) dropped automatically.
-        drop(self.proc_handle.take());
-        drop(self.thread_handle.take());
-
-        // 5. DeleteProcThreadAttributeList:
-        if !self.attr_list_buf.is_empty() {
-            unsafe {
-                let attr_list =
-                    LPPROC_THREAD_ATTRIBUTE_LIST(self.attr_list_buf.as_mut_ptr() as *mut c_void);
-                DeleteProcThreadAttributeList(attr_list);
-            }
-        }
-    }
-}
 
 /// Escapes a single argument for a Windows command line following msvcrt conventions.
 /// This replicates the logic from std::sys::windows::args::append_arg.
@@ -491,364 +419,7 @@ pub(crate) fn classify_command(args: &[String]) -> CommandKind {
     CommandKind::Direct
 }
 
-#[cfg(windows)]
-impl ConPty {
-    fn new(winsize: Winsize, command: &str) -> Result<Self> {
-        // 1. Create pipe pairs — wrap each end immediately in OwnedHandle
-        let (input_read, input_write) = {
-            let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
-            unsafe { CreatePipe(&mut read_raw, &mut write_raw, None, 0) }?;
-            unsafe {
-                (
-                    OwnedHandle::from_raw_handle(read_raw.0 as *mut _),
-                    OwnedHandle::from_raw_handle(write_raw.0 as *mut _),
-                )
-            }
-        };
-        let (output_read, output_write) = {
-            let (mut read_raw, mut write_raw) = (HANDLE::default(), HANDLE::default());
-            unsafe { CreatePipe(&mut read_raw, &mut write_raw, None, 0) }?;
-            unsafe {
-                (
-                    OwnedHandle::from_raw_handle(read_raw.0 as *mut _),
-                    OwnedHandle::from_raw_handle(write_raw.0 as *mut _),
-                )
-            }
-        };
-
-        // 2. Create pseudo-console
-        let size = COORD {
-            X: winsize.ws_col.min(i16::MAX as u16) as i16,
-            Y: winsize.ws_row.min(i16::MAX as u16) as i16,
-        };
-        let hpc = unsafe {
-            CreatePseudoConsole(
-                size,
-                HANDLE(input_read.as_raw_handle()),
-                HANDLE(output_write.as_raw_handle()),
-                0,
-            )
-        }?;
-
-        // 3. Close pipe ends given to ConPTY (it duplicated them)
-        drop(input_read);
-        drop(output_write);
-
-        // Build partial ConPty immediately so Drop covers hpc on any later failure
-        let mut conpty = ConPty {
-            hpc,
-            input_write: Some(input_write),
-            output_read: Some(output_read),
-            proc_handle: None,
-            thread_handle: None,
-            attr_list_buf: vec![],
-        };
-
-        // 4. Initialize proc thread attribute list (two-call pattern)
-        let mut attr_list_size: usize = 0;
-        let _ = unsafe {
-            InitializeProcThreadAttributeList(
-                LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
-                1,
-                0,
-                &mut attr_list_size,
-            )
-        };
-        conpty.attr_list_buf = vec![0u8; attr_list_size];
-        let attr_list =
-            LPPROC_THREAD_ATTRIBUTE_LIST(conpty.attr_list_buf.as_mut_ptr() as *mut c_void);
-        unsafe { InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size) }?;
-
-        // 5. Wire hpc into the attribute list
-        unsafe {
-            UpdateProcThreadAttribute(
-                attr_list,
-                0,
-                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-                Some(&conpty.hpc as *const HPCON as *const c_void),
-                size_of::<HPCON>(),
-                None,
-                None,
-            )
-        }?;
-
-        // 6. Build STARTUPINFOEXW referencing the attribute list
-        let mut si_ex: STARTUPINFOEXW = unsafe { zeroed() };
-        si_ex.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-        // Prevent the parent's redirected handles (pipes) from leaking to the
-        // child.  Without this, Windows Server 2022 (build 20348) propagates the
-        // parent's pipe handles instead of letting ConPTY provide console handles,
-        // causing the child to exit immediately (microsoft/terminal#11276).
-        si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        si_ex.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
-        si_ex.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
-        si_ex.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
-        si_ex.lpAttributeList = attr_list;
-
-        // 7. Build command line + CreateProcessW
-        assert!(
-            !command.is_empty(),
-            "command should not be empty; caller provides a default"
-        );
-        let mut cmd_wide: Vec<u16> = command
-            .encode_utf16()
-            .chain(std::iter::once(0u16))
-            .collect();
-        let cmd_pwstr = PWSTR(cmd_wide.as_mut_ptr());
-
-        let mut proc_info: PROCESS_INFORMATION = unsafe { zeroed() };
-
-        unsafe {
-            CreateProcessW(
-                None,
-                cmd_pwstr,
-                None,
-                None,
-                false,
-                EXTENDED_STARTUPINFO_PRESENT,
-                None,
-                None,
-                &si_ex.StartupInfo as *const STARTUPINFOW,
-                &mut proc_info,
-            )
-        }?;
-
-        // 8. Extract process/thread handles from PROCESS_INFORMATION
-        conpty.proc_handle =
-            Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess.0 as *mut _) });
-        conpty.thread_handle =
-            Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _) });
-
-        Ok(conpty)
-    }
-
-    async fn drive(
-        mut self,
-        mut input_rx: mpsc::Receiver<Vec<u8>>,
-        output_tx: mpsc::Sender<Vec<u8>>,
-        resize_rx: mpsc::Receiver<(u16, u16)>,
-        initial_input: Option<Vec<u8>>,
-    ) -> Result<()> {
-        // Take ownership of input_write for the write thread
-        let input_write = self
-            .input_write
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("input_write handle missing"))?;
-
-        // Take ownership of output_read for the read thread
-        let output_read = self
-            .output_read
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("output_read handle missing"))?;
-
-        // Spawn write thread — takes ownership of input_write
-        let mut write_handle = tokio::task::spawn_blocking(move || -> Option<OwnedHandle> {
-            // Safety: `raw` borrows the underlying handle value from `input_write`.
-            // `input_write` must remain alive for the entire lifetime of `raw`.
-            // It is either returned (Some branch) or explicitly dropped (None branch).
-            let raw = HANDLE(input_write.as_raw_handle());
-
-            // Inject initial input before relaying user input
-            if let Some(data) = initial_input {
-                let mut offset = 0;
-                while offset < data.len() {
-                    let mut written: u32 = 0;
-                    let ok =
-                        unsafe { WriteFile(raw, Some(&data[offset..]), Some(&mut written), None) };
-                    if ok.is_err() || written == 0 {
-                        return Some(input_write);
-                    }
-                    offset += written as usize;
-                }
-            }
-
-            loop {
-                match input_rx.blocking_recv() {
-                    Some(data) => {
-                        let mut offset = 0;
-                        while offset < data.len() {
-                            let mut written: u32 = 0;
-                            let ok = unsafe {
-                                WriteFile(raw, Some(&data[offset..]), Some(&mut written), None)
-                            };
-                            if ok.is_err() || written == 0 {
-                                // WriteFile failed or pipe closed — return ownership for cleanup
-                                return Some(input_write);
-                            }
-                            offset += written as usize;
-                        }
-                    }
-                    None => {
-                        // Channel closed (sender dropped) — drop input_write to propagate EOF
-                        drop(input_write);
-                        return None;
-                    }
-                }
-            }
-        });
-
-        // Spawn read thread — takes ownership of output_read
-        let mut read_handle = tokio::task::spawn_blocking(move || {
-            // Safety: `raw` borrows the underlying handle value from `output_read`.
-            // `output_read` is kept alive until the explicit `drop(output_read)` below.
-            let raw = HANDLE(output_read.as_raw_handle());
-            let mut buf = vec![0u8; READ_BUF_SIZE];
-            loop {
-                let mut bytes_read: u32 = 0;
-                let ok = unsafe { ReadFile(raw, Some(&mut buf), Some(&mut bytes_read), None) };
-                if ok.is_err() || bytes_read == 0 {
-                    break;
-                }
-                let data = buf[..bytes_read as usize].to_vec();
-                if output_tx.blocking_send(data).is_err() {
-                    break;
-                }
-            }
-            drop(output_read);
-        });
-
-        // Spawn resize task
-        let hpc_send = SendHandle::from_hpcon(self.hpc);
-        let resize_task = tokio::spawn(resize_loop(hpc_send, resize_rx));
-
-        // Get raw process handle for waiting.
-        // Safety: self.proc_handle is not dropped until after all tasks using
-        // this raw copy have been awaited (see cleanup step 4).
-        let proc_send = SendHandle::from_handle(HANDLE(
-            self.proc_handle
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("proc_handle missing"))?
-                .as_raw_handle(),
-        ));
-
-        // Spawn a task to wait for child process exit
-        let mut wait_handle = tokio::task::spawn_blocking(move || unsafe {
-            WaitForSingleObject(proc_send.to_handle(), u32::MAX);
-        });
-
-        // Wait for any of the three events.
-        // Use &mut references to preserve JoinHandles for cleanup.
-        #[derive(PartialEq)]
-        enum Finished {
-            Write,
-            Read,
-            Wait,
-        }
-        let finished = tokio::select! {
-            result = &mut write_handle => {
-                // Write thread finished (channel closed or WriteFile failed)
-                if let Ok(Some(handle)) = result {
-                    drop(handle);
-                }
-                Finished::Write
-            }
-            _ = &mut read_handle => {
-                // Read thread finished (EOF or pipe error)
-                Finished::Read
-            }
-            _ = &mut wait_handle => {
-                // Child process exited
-                Finished::Wait
-            }
-        };
-
-        // --- Cleanup sequence ---
-
-        // 1. Abort the resize task
-        resize_task.abort();
-
-        // 2. ClosePseudoConsole in spawn_blocking (may briefly block).
-        //    This breaks the output pipe (unblocking the read thread's ReadFile)
-        //    and signals the child process to exit (unblocking the wait thread).
-        let hpc_send = SendHandle::from_hpcon(self.hpc);
-        if !hpc_send.is_null() {
-            match tokio::task::spawn_blocking(move || unsafe {
-                ClosePseudoConsole(hpc_send.to_hpcon());
-            })
-            .await
-            {
-                Ok(()) => {
-                    // ClosePseudoConsole ran; prevent Drop from double-closing.
-                    self.hpc = HPCON(0);
-                }
-                Err(join_err) => {
-                    // Task panicked or was cancelled before ClosePseudoConsole ran.
-                    // Leave self.hpc non-zero so Drop will close it.
-                    // Best-effort cleanup: await remaining blocking threads
-                    // to prevent them from outliving the dropped handles.
-                    let _ = write_handle.await;
-                    let _ = read_handle.await;
-                    let _ = wait_handle.await;
-                    return Err(join_err.into());
-                }
-            }
-        }
-
-        // 3. Wait for child to exit or kill it.
-        //    Safety: proc_send is a copy of self.proc_handle's raw value.
-        //    self.proc_handle is not dropped until step 5, after all tasks
-        //    using proc_send have been awaited in step 4.
-        if !proc_send.is_null() {
-            tokio::task::spawn_blocking(move || unsafe {
-                let proc_raw = proc_send.to_handle();
-                let wait_result = WaitForSingleObject(proc_raw, 5000);
-                if wait_result != WAIT_OBJECT_0 {
-                    let _ = TerminateProcess(proc_raw, 1);
-                    WaitForSingleObject(proc_raw, u32::MAX);
-                }
-            })
-            .await?;
-        }
-
-        // 4. All blocking threads should now be done (ClosePseudoConsole broke
-        //    the pipe and the child has exited). Await remaining JoinHandles to
-        //    ensure no thread still holds a raw handle copy before we drop self.
-        if finished != Finished::Write {
-            let _ = write_handle.await;
-        }
-        if finished != Finished::Read {
-            let _ = read_handle.await;
-        }
-        if finished != Finished::Wait {
-            let _ = wait_handle.await;
-        }
-
-        // 5. Drop self — closes proc_handle/thread_handle,
-        //    calls DeleteProcThreadAttributeList.
-        //    output_read was already consumed by the read thread.
-        drop(self);
-
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-async fn resize_loop(hpc: SendHandle, mut resize_rx: mpsc::Receiver<(u16, u16)>) {
-    while let Some((cols, rows)) = resize_rx.recv().await {
-        let coord = COORD {
-            X: cols.min(i16::MAX as u16) as i16,
-            Y: rows.min(i16::MAX as u16) as i16,
-        };
-        unsafe {
-            let _ = ResizePseudoConsole(hpc.to_hpcon(), coord);
-        }
-    }
-}
-
-#[cfg(windows)]
-pub fn spawn(
-    command: String,
-    winsize: Winsize,
-    input_rx: mpsc::Receiver<Vec<u8>>,
-    output_tx: mpsc::Sender<Vec<u8>>,
-    resize_rx: mpsc::Receiver<(u16, u16)>,
-    initial_input: Option<Vec<u8>>,
-) -> Result<impl Future<Output = Result<()>>> {
-    let conpty = ConPty::new(winsize, &command)?;
-    Ok(conpty.drive(input_rx, output_tx, resize_rx, initial_input))
-}
-
-// ── Scrape PTY backend ──────────────────────────────────────────────────
+// ── Screen-scraping PTY ─────────────────────────────────────────────
 
 #[cfg(windows)]
 static SCRAPE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1048,6 +619,18 @@ fn diff_and_emit(
 
 // ── Input parser ────────────────────────────────────────────────────────
 
+/// Returns the expected byte length of a UTF-8 sequence given its start byte,
+/// or 0 if the byte is not a valid UTF-8 start byte (continuation or invalid).
+#[cfg(windows)]
+fn utf8_seq_len(b: u8) -> usize {
+    match b {
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 0,
+    }
+}
+
 #[cfg(windows)]
 enum InputAction {
     KeyEvent(KEY_EVENT_RECORD),
@@ -1074,11 +657,29 @@ impl InputParser {
     fn flush_pending(&mut self) -> Vec<InputAction> {
         let pending = std::mem::take(&mut self.pending);
         let mut actions = Vec::new();
-        for &b in &pending {
+        let mut i = 0;
+        while i < pending.len() {
+            let b = pending[i];
             if b == 0x1b {
                 actions.push(self.make_key_action(0x1b as u16, 0x1b, 0));
+                i += 1;
+            } else if b >= 0x80 {
+                let seq_len = utf8_seq_len(b);
+                if seq_len > 0 && i + seq_len <= pending.len() {
+                    if let Ok(s) = std::str::from_utf8(&pending[i..i + seq_len]) {
+                        for ch in s.chars() {
+                            actions.extend(self.char_to_actions(ch));
+                        }
+                        i += seq_len;
+                        continue;
+                    }
+                }
+                // Invalid or incomplete — send byte as VK_PACKET
+                actions.push(self.make_vk_packet_action(b as u16));
+                i += 1;
             } else {
                 actions.extend(self.byte_to_actions(b));
+                i += 1;
             }
         }
         actions
@@ -1207,6 +808,32 @@ impl InputParser {
                     ));
                 }
                 i += 1;
+            } else if b >= 0x80 {
+                // UTF-8 multi-byte sequence
+                let seq_len = utf8_seq_len(b);
+                if seq_len == 0 {
+                    // Invalid start byte — send as VK_PACKET
+                    actions.push(self.make_vk_packet_action(b as u16));
+                    i += 1;
+                } else if i + seq_len > input.len() {
+                    // Incomplete UTF-8 sequence at end of input — buffer it
+                    self.pending = input[i..].to_vec();
+                    break;
+                } else {
+                    match std::str::from_utf8(&input[i..i + seq_len]) {
+                        Ok(s) => {
+                            for ch in s.chars() {
+                                actions.extend(self.char_to_actions(ch));
+                            }
+                            i += seq_len;
+                        }
+                        Err(_) => {
+                            // Invalid UTF-8 — send first byte as VK_PACKET, advance one byte
+                            actions.push(self.make_vk_packet_action(b as u16));
+                            i += 1;
+                        }
+                    }
+                }
             } else {
                 actions.extend(self.byte_to_actions(b));
                 i += 1;
@@ -1217,10 +844,10 @@ impl InputParser {
     }
 
     fn is_processed_input(&self, conin: HANDLE) -> bool {
-        let mut mode = 0u32;
+        let mut mode = CONSOLE_MODE(0);
         let result = unsafe { GetConsoleMode(conin, &mut mode) };
         if result.is_ok() {
-            mode & ENABLE_PROCESSED_INPUT.0 != 0
+            mode & ENABLE_PROCESSED_INPUT != CONSOLE_MODE(0)
         } else {
             true // default assumption: processed input
         }
@@ -1250,8 +877,7 @@ impl InputParser {
                 self.char_to_actions(b as char)
             }
             _ => {
-                // High bytes — try to decode as UTF-8 start byte
-                // For individual bytes outside valid ranges, use VK_PACKET
+                // Lone high byte (invalid UTF-8) — send as VK_PACKET
                 vec![self.make_vk_packet_action(b as u16)]
             }
         }
@@ -1300,7 +926,7 @@ impl InputParser {
 
     fn make_vk_packet_action(&self, unicode_char: u16) -> InputAction {
         let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
-        ke.wVirtualKeyCode = VIRTUAL_KEY(0xE7); // VK_PACKET
+        ke.wVirtualKeyCode = 0xE7; // VK_PACKET
         ke.wVirtualScanCode = 0;
         ke.uChar.UnicodeChar = unicode_char;
         ke.dwControlKeyState = 0;
@@ -1311,7 +937,7 @@ impl InputParser {
     fn make_key_action(&self, vk: u16, unicode_char: u16, mods: u32) -> InputAction {
         let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
         let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
-        ke.wVirtualKeyCode = VIRTUAL_KEY(vk);
+        ke.wVirtualKeyCode = vk;
         ke.wVirtualScanCode = scan;
         ke.uChar.UnicodeChar = unicode_char;
         ke.dwControlKeyState = mods;
@@ -1468,20 +1094,15 @@ enum ParseResult {
 fn expand_key_event(ke: &KEY_EVENT_RECORD) -> [INPUT_RECORD; 2] {
     let mut down: INPUT_RECORD = unsafe { zeroed() };
     down.EventType = 0x0001; // KEY_EVENT
-    unsafe {
-        let kd = down.Event.KeyEvent_mut();
-        kd.bKeyDown = windows::Win32::Foundation::BOOL(1);
-        kd.wRepeatCount = ke.wRepeatCount;
-        kd.wVirtualKeyCode = ke.wVirtualKeyCode;
-        kd.wVirtualScanCode = ke.wVirtualScanCode;
-        kd.uChar.UnicodeChar = ke.uChar.UnicodeChar;
-        kd.dwControlKeyState = ke.dwControlKeyState;
-    }
+
+    let mut key_down = *ke;
+    key_down.bKeyDown = windows::Win32::Foundation::BOOL(1);
+    down.Event.KeyEvent = key_down;
 
     let mut up = down;
-    unsafe {
-        up.Event.KeyEvent_mut().bKeyDown = windows::Win32::Foundation::BOOL(0);
-    }
+    let mut key_up = *ke;
+    key_up.bKeyDown = windows::Win32::Foundation::BOOL(0);
+    up.Event.KeyEvent = key_up;
 
     [down, up]
 }
@@ -1578,22 +1199,22 @@ impl ScrapePty {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            anyhow::bail!("only one scrape backend can be active at a time");
+            anyhow::bail!("only one ht instance can be active at a time");
         }
 
         let mut guard = ConsoleGuard::new();
 
         // 2. Verify stdio is pipe-backed (not console)
         unsafe {
-            for &std_handle in &[STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            for &std_handle in &[STD_INPUT_HANDLE, STD_OUTPUT_HANDLE] {
                 let h = GetStdHandle(std_handle)?;
                 if h != INVALID_HANDLE_VALUE && !h.is_invalid() {
-                    let mut mode = 0u32;
+                    let mut mode = CONSOLE_MODE(0);
                     if GetConsoleMode(h, &mut mode).is_ok() {
                         anyhow::bail!(
-                            "scrape backend requires redirected stdio (pipes or files).\n\
+                            "ht requires redirected stdio (pipes or files).\n\
                              It cannot be used from an interactive console.\n\
-                             Typical usage: orchestrator spawns `ht --backend scrape ...` with piped stdin/stdout."
+                             Typical usage: orchestrator spawns `ht ...` with piped stdin/stdout."
                         );
                     }
                 }
@@ -1699,19 +1320,18 @@ impl ScrapePty {
 
         // 8. Enable VT processing
         unsafe {
-            let mut mode = 0u32;
+            let mut mode = CONSOLE_MODE(0);
             if GetConsoleMode(conout, &mut mode).is_ok() {
                 let _ = SetConsoleMode(
                     conout,
-                    (mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0 | ENABLE_PROCESSED_OUTPUT.0)
-                        .into(),
+                    mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT,
                 );
             }
-            let mut in_mode = 0u32;
+            let mut in_mode = CONSOLE_MODE(0);
             if GetConsoleMode(conin, &mut in_mode).is_ok() {
                 let _ = SetConsoleMode(
                     conin,
-                    (in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT.0).into(),
+                    in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT,
                 );
             }
         }
@@ -1953,10 +1573,10 @@ impl ScrapePty {
         let mut input_relay = tokio::spawn(async move {
             let mut parser = InputParser::new();
             let mut input_rx = input_rx;
-            let conin_h = conin_input.to_handle();
 
             // Handle initial input
             if let Some(data) = initial_input {
+                let conin_h = conin_input.to_handle();
                 let actions = parser.parse(&data, conin_h);
                 Self::dispatch_actions(&actions, conin_h, child_pid);
             }
@@ -1968,6 +1588,8 @@ impl ScrapePty {
                 )
                 .await;
 
+                // Reconstruct HANDLE after .await (HANDLE is !Send)
+                let conin_h = conin_input.to_handle();
                 match result {
                     Ok(Some(data)) => {
                         let actions = parser.parse(&data, conin_h);
@@ -2139,28 +1761,17 @@ impl ScrapePty {
     }
 }
 
-// ── spawn_with_backend ──────────────────────────────────────────────────
-
 #[cfg(windows)]
-pub fn spawn_with_backend(
+pub fn spawn(
     command: String,
     winsize: Winsize,
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
     resize_rx: mpsc::Receiver<(u16, u16)>,
     initial_input: Option<Vec<u8>>,
-    backend: crate::cli::Backend,
-) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send>>> {
-    match backend {
-        crate::cli::Backend::Conpty => {
-            let conpty = ConPty::new(winsize, &command)?;
-            Ok(Box::pin(conpty.drive(input_rx, output_tx, resize_rx, initial_input)))
-        }
-        crate::cli::Backend::Scrape => {
-            let scrape = ScrapePty::new(winsize, &command)?;
-            Ok(Box::pin(scrape.drive(input_rx, output_tx, resize_rx, initial_input)))
-        }
-    }
+) -> Result<impl Future<Output = Result<()>>> {
+    let scrape = ScrapePty::new(winsize, &command)?;
+    Ok(scrape.drive(input_rx, output_tx, resize_rx, initial_input))
 }
 
 #[cfg(test)]
@@ -2539,7 +2150,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x0D)); // VK_RETURN
+                assert_eq!(ke.wVirtualKeyCode, 0x0D); // VK_RETURN
             }
             _ => panic!("expected KeyEvent"),
         }
@@ -2552,7 +2163,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(b'Z' as u16));
+                assert_eq!(ke.wVirtualKeyCode, b'Z' as u16);
                 assert_eq!(ke.dwControlKeyState & 0x0008, 0x0008); // LEFT_CTRL_PRESSED
             }
             _ => panic!("expected KeyEvent"),
@@ -2567,7 +2178,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.wVirtualKeyCode, 0x26); // VK_UP
             }
             _ => panic!("expected KeyEvent"),
         }
@@ -2581,7 +2192,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.wVirtualKeyCode, 0x26); // VK_UP
             }
             _ => panic!("expected KeyEvent"),
         }
@@ -2595,7 +2206,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.wVirtualKeyCode, 0x26); // VK_UP
                 assert_eq!(ke.dwControlKeyState & 0x0008, 0x0008); // LEFT_CTRL_PRESSED
             }
             _ => panic!("expected KeyEvent"),
@@ -2610,7 +2221,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.wVirtualKeyCode, 0x26); // VK_UP
                 assert_eq!(ke.dwControlKeyState & 0x0008, 0x0008); // LEFT_CTRL_PRESSED
                 assert_eq!(ke.dwControlKeyState & 0x0002, 0x0002); // LEFT_ALT_PRESSED
             }
@@ -2628,7 +2239,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x74)); // VK_F5
+                assert_eq!(ke.wVirtualKeyCode, 0x74); // VK_F5
             }
             _ => panic!("expected KeyEvent for F5"),
         }
@@ -2638,7 +2249,7 @@ mod scrape_tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x7B)); // VK_F12
+                assert_eq!(ke.wVirtualKeyCode, 0x7B); // VK_F12
             }
             _ => panic!("expected KeyEvent for F12"),
         }
@@ -2674,7 +2285,7 @@ mod scrape_tests {
     #[test]
     fn expand_key_event_produces_down_up() {
         let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
-        ke.wVirtualKeyCode = VIRTUAL_KEY(0x41); // 'A'
+        ke.wVirtualKeyCode = 0x41; // 'A'
         ke.wRepeatCount = 1;
         ke.uChar.UnicodeChar = b'a' as u16;
         let records = expand_key_event(&ke);
@@ -2701,7 +2312,7 @@ mod scrape_tests {
         assert_eq!(actions2.len(), 1);
         match &actions2[0] {
             InputAction::KeyEvent(ke) => {
-                assert_eq!(ke.wVirtualKeyCode, VIRTUAL_KEY(0x26)); // VK_UP
+                assert_eq!(ke.wVirtualKeyCode, 0x26); // VK_UP
             }
             _ => panic!("expected KeyEvent"),
         }
@@ -2726,6 +2337,78 @@ mod scrape_tests {
             _ => panic!("expected ESC KeyEvent"),
         }
         assert!(!parser.has_pending());
+    }
+
+    // ── UTF-8 decoding in InputParser ────────────────────────────────
+
+    #[test]
+    fn parse_utf8_two_byte_char() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        // é = U+00E9 = UTF-8 0xC3 0xA9
+        let actions = parser.parse(&[0xC3, 0xA9], conin);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, 0xE7); // VK_PACKET
+                assert_eq!(unsafe { ke.uChar.UnicodeChar }, 0x00E9); // é
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_utf8_three_byte_char() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        // € = U+20AC = UTF-8 0xE2 0x82 0xAC
+        let actions = parser.parse(&[0xE2, 0x82, 0xAC], conin);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(ke.wVirtualKeyCode, 0xE7); // VK_PACKET
+                assert_eq!(unsafe { ke.uChar.UnicodeChar }, 0x20AC); // €
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_utf8_four_byte_char_produces_surrogate_pair() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        // 🎉 = U+1F389 = UTF-8 0xF0 0x9F 0x8E 0x89
+        let actions = parser.parse(&[0xF0, 0x9F, 0x8E, 0x89], conin);
+        // U+1F389 > U+FFFF, so vk_packet_for_char produces 2 VK_PACKET events (surrogate pair)
+        assert_eq!(actions.len(), 2);
+    }
+
+    #[test]
+    fn parse_utf8_split_across_chunks() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        // é = 0xC3 0xA9, split across two parse() calls
+        let actions1 = parser.parse(&[0xC3], conin);
+        assert!(actions1.is_empty(), "incomplete UTF-8 should be buffered");
+        assert!(parser.has_pending());
+
+        let actions2 = parser.parse(&[0xA9], conin);
+        assert_eq!(actions2.len(), 1);
+        match &actions2[0] {
+            InputAction::KeyEvent(ke) => {
+                assert_eq!(unsafe { ke.uChar.UnicodeChar }, 0x00E9);
+            }
+            _ => panic!("expected KeyEvent"),
+        }
+    }
+
+    #[test]
+    fn parse_mixed_ascii_and_utf8() {
+        let mut parser = InputParser::new();
+        let conin = HANDLE(std::ptr::null_mut());
+        // "aé" = 0x61 0xC3 0xA9
+        let actions = parser.parse(&[0x61, 0xC3, 0xA9], conin);
+        assert_eq!(actions.len(), 2); // 'a' + 'é'
     }
 
     // ── decode_char_info_row ────────────────────────────────────────

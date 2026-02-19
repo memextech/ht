@@ -30,8 +30,6 @@ async fn main() -> Result<()> {
         input_rx,
         output_tx,
         resize_rx,
-        #[cfg(windows)]
-        cli.backend,
     )?;
     let session = build_session(&cli.size);
     run_event_loop(
@@ -59,7 +57,6 @@ fn start_pty(
     input_rx: mpsc::Receiver<Vec<u8>>,
     output_tx: mpsc::Sender<Vec<u8>>,
     resize_rx: mpsc::Receiver<(u16, u16)>,
-    #[cfg(windows)] backend: cli::Backend,
 ) -> Result<JoinHandle<Result<()>>> {
     let winsize = **size;
 
@@ -123,19 +120,13 @@ fn start_pty(
 
     #[cfg(windows)]
     {
-        if matches!(backend, cli::Backend::Scrape) {
-            eprintln!("warning: using scrape backend — this is a CI fallback with limited input fidelity.");
-            eprintln!("         Piped stdin data will be rewritten as keystrokes (may corrupt binary/raw input).");
-            eprintln!("         Use the default ConPTY backend for interactive use or piped data workloads.");
-        }
-        Ok(tokio::spawn(pty::spawn_with_backend(
+        Ok(tokio::spawn(pty::spawn(
             command_str,
             winsize,
             input_rx,
             output_tx,
             resize_rx,
             initial_input,
-            backend,
         )?))
     }
 }
