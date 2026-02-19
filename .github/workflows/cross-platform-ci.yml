@@ -173,7 +173,6 @@ jobs:
       with:
         name: ht-windows-x86_64
         path: ${{ steps.find_binary.outputs.binary_path }}
-
   # Summary job to check all platforms passed
   cross-platform-summary:
     needs: [unix-build, windows-build]

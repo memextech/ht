@@ -1,6 +1,6 @@
 # ht - headless terminal
 
-`ht` (short for *headless terminal*) is a command line program that wraps an arbitrary other binary (e.g. `bash`, `vim`, etc.) with a VT100 style terminal interface--i.e. a pseudoterminal client (PTY) plus terminal server--and allows easy programmatic access to the input and output of that terminal (via JSON over STDIN/STDOUT). `ht` is built in rust and works on MacOS and Linux.
+`ht` (short for *headless terminal*) is a command line program that wraps an arbitrary other binary (e.g. `bash`, `vim`, etc.) with a VT100 style terminal interface--i.e. a pseudoterminal client (PTY) plus terminal server--and allows easy programmatic access to the input and output of that terminal (via JSON over STDIN/STDOUT). `ht` is built in rust and works on macOS, Linux, and Windows. On Windows, ht requires redirected stdio (pipes or files) — it is designed to be launched by an orchestrator process, not run directly from an interactive console.
 
 <img src="https://andykonwinski.com/assets/img/headless-terminal.png" alt="screenshot of raw terminal output vs ht output" align="right" style="width:450px">
 
@@ -49,6 +49,10 @@ copy the binary to a directory in your `$PATH`.
 
 Run `ht` to start an interactive shell in a PTY (pseudo-terminal): bash on
 Unix/macOS, cmd.exe on Windows.
+
+> **Note (Windows):** On Windows, ht must be launched with piped
+> stdin/stdout (e.g. by an orchestrator or test harness). Running it
+> directly from an interactive console is not supported.
 
 To launch a different program (a different shell, another program) run `ht
 <command> <args...>`. For example:
@@ -280,8 +284,9 @@ Event data is an object with the following fields:
 ## Testing on command line
 
 ht is aimed at programmatic use given its JSON-based API, however one can play
-with it by just launching it in a normal desktop terminal emulator and typing in
-JSON-encoded commands from keyboard and observing the output on STDOUT.
+with it (Unix/macOS only) by just launching it in a normal desktop terminal
+emulator and typing in JSON-encoded commands from keyboard and observing the
+output on STDOUT.
 
 [rlwrap](https://github.com/hanslub42/rlwrap) can be used to wrap STDIN in a
 readline based editable prompt, which also provides history (up/down arrows).
