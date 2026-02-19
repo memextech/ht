@@ -2314,8 +2314,8 @@ mod scrape_tests {
         assert_eq!(records.len(), 2);
         // First is key-down
         unsafe {
-            assert_eq!(records[0].Event.KeyEvent().bKeyDown.0, 1);
-            assert_eq!(records[1].Event.KeyEvent().bKeyDown.0, 0);
+            assert_eq!(records[0].Event.KeyEvent.bKeyDown.0, 1);
+            assert_eq!(records[1].Event.KeyEvent.bKeyDown.0, 0);
         }
     }
 
