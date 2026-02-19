@@ -428,7 +428,6 @@ struct Cell {
     attr: u16,
 }
 
-
 /// Converts a Windows console attribute word to an ANSI SGR escape sequence.
 #[cfg(windows)]
 fn attr_to_sgr(attr: u16) -> String {
