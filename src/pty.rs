@@ -42,7 +42,7 @@ use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows::Win32::System::Console::COORD;
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    CreateProcessW, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, PROCESS_INFORMATION,
+    CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, CreateProcessW, PROCESS_INFORMATION,
     STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 #[cfg(windows)]
@@ -50,34 +50,30 @@ use windows::core::PWSTR;
 
 // Scrape backend imports
 #[cfg(windows)]
-use windows::Win32::System::Console::{
-    AttachConsole, FreeConsole, GetConsoleMode, GetConsoleScreenBufferInfo, ReadConsoleOutputW,
-    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleScreenBufferSize, SetConsoleWindowInfo,
-    WriteConsoleInputW, GenerateConsoleCtrlEvent, GetStdHandle,
-    ATTACH_PARENT_PROCESS, CHAR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
-    CTRL_C_EVENT, ENABLE_PROCESSED_INPUT,
-    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    INPUT_RECORD, KEY_EVENT_RECORD, SMALL_RECT, STD_INPUT_HANDLE,
-    STD_OUTPUT_HANDLE,
-};
+use windows::Win32::Foundation::GENERIC_READ;
+#[cfg(windows)]
+use windows::Win32::Foundation::GENERIC_WRITE;
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 #[cfg(windows)]
+use windows::Win32::System::Console::{
+    ATTACH_PARENT_PROCESS, AttachConsole, CHAR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
+    CTRL_C_EVENT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleMode,
+    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD, ReadConsoleOutputW,
+    SMALL_RECT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode,
+    SetConsoleScreenBufferSize, SetConsoleWindowInfo, WriteConsoleInputW,
+};
+#[cfg(windows)]
 use windows::Win32::System::Threading::STARTF_USESHOWWINDOW;
 #[cfg(windows)]
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, VkKeyScanW, MAPVK_VK_TO_VSC,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC, MapVirtualKeyW, VkKeyScanW};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 #[cfg(windows)]
 use windows::core::PCWSTR;
-#[cfg(windows)]
-use windows::Win32::Foundation::GENERIC_READ;
-#[cfg(windows)]
-use windows::Win32::Foundation::GENERIC_WRITE;
 
 /// A `Send`-safe wrapper for Windows `HANDLE`.
 ///
@@ -487,8 +483,16 @@ fn attr_to_sgr(attr: u16) -> String {
     );
     let bg_bright = attr & WIN_BG_INTENSITY != 0;
 
-    let fg_code = if fg_bright { 90 + fg_idx as u32 } else { 30 + fg_idx as u32 };
-    let bg_code = if bg_bright { 100 + bg_idx as u32 } else { 40 + bg_idx as u32 };
+    let fg_code = if fg_bright {
+        90 + fg_idx as u32
+    } else {
+        30 + fg_idx as u32
+    };
+    let bg_code = if bg_bright {
+        100 + bg_idx as u32
+    } else {
+        40 + bg_idx as u32
+    };
 
     let mut sgr = format!("\x1b[0;{};{}", fg_code, bg_code);
     if attr & COMMON_LVB_REVERSE_VIDEO != 0 {
@@ -952,12 +956,12 @@ impl InputParser {
     /// Parses modifier parameter value to dwControlKeyState flags.
     fn modifier_to_flags(modifier: u8) -> u32 {
         match modifier {
-            2 => 0x0010,                 // Shift
-            3 => 0x0002,                 // Alt
-            4 => 0x0002 | 0x0010,        // Alt+Shift
-            5 => 0x0008,                 // Ctrl
-            6 => 0x0008 | 0x0010,        // Ctrl+Shift
-            7 => 0x0008 | 0x0002,        // Ctrl+Alt
+            2 => 0x0010,                   // Shift
+            3 => 0x0002,                   // Alt
+            4 => 0x0002 | 0x0010,          // Alt+Shift
+            5 => 0x0008,                   // Ctrl
+            6 => 0x0008 | 0x0010,          // Ctrl+Shift
+            7 => 0x0008 | 0x0002,          // Ctrl+Alt
             8 => 0x0008 | 0x0002 | 0x0010, // Ctrl+Alt+Shift
             _ => 0,
         }
@@ -1044,18 +1048,18 @@ impl InputParser {
                     0
                 };
                 let vk = match num {
-                    2 => Some(0x2Du16),  // VK_INSERT
-                    3 => Some(0x2E),     // VK_DELETE
-                    5 => Some(0x21),     // VK_PRIOR (PgUp)
-                    6 => Some(0x22),     // VK_NEXT (PgDn)
-                    15 => Some(0x74),    // VK_F5
-                    17 => Some(0x75),    // VK_F6
-                    18 => Some(0x76),    // VK_F7
-                    19 => Some(0x77),    // VK_F8
-                    20 => Some(0x78),    // VK_F9
-                    21 => Some(0x79),    // VK_F10
-                    23 => Some(0x7A),    // VK_F11
-                    24 => Some(0x7B),    // VK_F12
+                    2 => Some(0x2Du16), // VK_INSERT
+                    3 => Some(0x2E),    // VK_DELETE
+                    5 => Some(0x21),    // VK_PRIOR (PgUp)
+                    6 => Some(0x22),    // VK_NEXT (PgDn)
+                    15 => Some(0x74),   // VK_F5
+                    17 => Some(0x75),   // VK_F6
+                    18 => Some(0x76),   // VK_F7
+                    19 => Some(0x77),   // VK_F8
+                    20 => Some(0x78),   // VK_F9
+                    21 => Some(0x79),   // VK_F10
+                    23 => Some(0x7A),   // VK_F11
+                    24 => Some(0x7B),   // VK_F12
                     _ => None,
                 };
                 if let Some(vk) = vk {
@@ -1265,13 +1269,11 @@ impl ScrapePty {
             Some(unsafe { OwnedHandle::from_raw_handle(proc_info.hThread.0 as *mut _) });
 
         // 5. Polling attach loop — retry AttachConsole every 50ms for up to 5s
-        let attach_deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let attach_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut attached = false;
         while std::time::Instant::now() < attach_deadline {
             // Check if child already exited
-            let wait_result =
-                unsafe { WaitForSingleObject(proc_info.hProcess, 0) };
+            let wait_result = unsafe { WaitForSingleObject(proc_info.hProcess, 0) };
             if wait_result == WAIT_OBJECT_0 {
                 anyhow::bail!("child process exited before console was ready");
             }
@@ -1329,10 +1331,7 @@ impl ScrapePty {
             }
             let mut in_mode = CONSOLE_MODE(0);
             if GetConsoleMode(conin, &mut in_mode).is_ok() {
-                let _ = SetConsoleMode(
-                    conin,
-                    in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT,
-                );
+                let _ = SetConsoleMode(conin, in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT);
             }
         }
 
@@ -1453,10 +1452,7 @@ impl ScrapePty {
                     // Read scrolled-out rows from scrollback buffer
                     let read_height = scroll_rows.min(8192);
                     let mut scroll_buf =
-                        vec![
-                            unsafe { zeroed::<CHAR_INFO>() };
-                            viewport_width * read_height
-                        ];
+                        vec![unsafe { zeroed::<CHAR_INFO>() }; viewport_width * read_height];
                     let scroll_size = COORD {
                         X: viewport_width as i16,
                         Y: read_height as i16,
@@ -1504,7 +1500,8 @@ impl ScrapePty {
                 prev_sr_window_top = sr.Top;
 
                 // Read current viewport via ReadConsoleOutputW
-                let mut buf = vec![unsafe { zeroed::<CHAR_INFO>() }; viewport_width * viewport_height];
+                let mut buf =
+                    vec![unsafe { zeroed::<CHAR_INFO>() }; viewport_width * viewport_height];
                 let buf_size = COORD {
                     X: viewport_width as i16,
                     Y: viewport_height as i16,
@@ -1582,11 +1579,9 @@ impl ScrapePty {
             }
 
             loop {
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_millis(1000),
-                    input_rx.recv(),
-                )
-                .await;
+                let result =
+                    tokio::time::timeout(std::time::Duration::from_millis(1000), input_rx.recv())
+                        .await;
 
                 // Reconstruct HANDLE after .await (HANDLE is !Send)
                 let conin_h = conin_input.to_handle();
@@ -1749,9 +1744,7 @@ impl ScrapePty {
                 InputAction::KeyEvent(ke) => {
                     let records = expand_key_event(ke);
                     let mut written = 0u32;
-                    let _ = unsafe {
-                        WriteConsoleInputW(conin, &records, &mut written)
-                    };
+                    let _ = unsafe { WriteConsoleInputW(conin, &records, &mut written) };
                 }
                 InputAction::GenerateCtrlC => {
                     let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, child_pid) };
@@ -2062,13 +2055,19 @@ mod scrape_tests {
     fn attr_bright_green_foreground() {
         // Bright green = GREEN(0x02) | INTENSITY(0x08)
         let sgr = attr_to_sgr(0x000A);
-        assert!(sgr.contains("92"), "expected bright green fg (92), got: {sgr}");
+        assert!(
+            sgr.contains("92"),
+            "expected bright green fg (92), got: {sgr}"
+        );
     }
 
     #[test]
     fn attr_reverse_video() {
         let sgr = attr_to_sgr(0x4007); // COMMON_LVB_REVERSE_VIDEO | white on black
-        assert!(sgr.contains(";7"), "expected reverse video (;7), got: {sgr}");
+        assert!(
+            sgr.contains(";7"),
+            "expected reverse video (;7), got: {sgr}"
+        );
     }
 
     #[test]
@@ -2090,41 +2089,77 @@ mod scrape_tests {
     #[test]
     fn diff_first_frame_emits_all() {
         let row = vec![
-            Cell { ch: 'A', width: 1, attr: 0x07 },
-            Cell { ch: 'B', width: 1, attr: 0x07 },
+            Cell {
+                ch: 'A',
+                width: 1,
+                attr: 0x07,
+            },
+            Cell {
+                ch: 'B',
+                width: 1,
+                attr: 0x07,
+            },
         ];
         let curr = vec![row];
         let result = diff_and_emit(&[], &curr, 1, 1, 2);
         assert!(result.contains('A'), "should contain 'A': {result}");
         assert!(result.contains('B'), "should contain 'B': {result}");
         // Should have cursor positioning
-        assert!(result.contains("\x1b[1;1H"), "should position cursor: {result}");
+        assert!(
+            result.contains("\x1b[1;1H"),
+            "should position cursor: {result}"
+        );
     }
 
     #[test]
     fn diff_no_change_emits_cursor_only() {
-        let row = vec![Cell { ch: 'X', width: 1, attr: 0x07 }];
+        let row = vec![Cell {
+            ch: 'X',
+            width: 1,
+            attr: 0x07,
+        }];
         let viewport = vec![row.clone()];
         let result = diff_and_emit(&viewport, &viewport, 1, 1, 1);
         // Should only contain cursor positioning, not 'X'
-        assert!(!result.contains('X'), "unchanged row should not re-emit: {result}");
+        assert!(
+            !result.contains('X'),
+            "unchanged row should not re-emit: {result}"
+        );
     }
 
     #[test]
     fn diff_changed_row_has_erase() {
-        let old = vec![vec![Cell { ch: 'A', width: 1, attr: 0x07 }]];
-        let new = vec![vec![Cell { ch: 'B', width: 1, attr: 0x07 }]];
+        let old = vec![vec![Cell {
+            ch: 'A',
+            width: 1,
+            attr: 0x07,
+        }]];
+        let new = vec![vec![Cell {
+            ch: 'B',
+            width: 1,
+            attr: 0x07,
+        }]];
         let result = diff_and_emit(&old, &new, 1, 1, 3);
         assert!(result.contains('B'), "should contain new char: {result}");
-        assert!(result.contains("\x1b[K"), "should have erase-to-end: {result}");
+        assert!(
+            result.contains("\x1b[K"),
+            "should have erase-to-end: {result}"
+        );
     }
 
     #[test]
     fn diff_cursor_position_1based() {
-        let row = vec![Cell { ch: ' ', width: 1, attr: 0x07 }];
+        let row = vec![Cell {
+            ch: ' ',
+            width: 1,
+            attr: 0x07,
+        }];
         let viewport = vec![row];
         let result = diff_and_emit(&viewport, &viewport, 3, 5, 1);
-        assert!(result.contains("\x1b[3;5H"), "cursor should be at row 3 col 5: {result}");
+        assert!(
+            result.contains("\x1b[3;5H"),
+            "cursor should be at row 3 col 5: {result}"
+        );
     }
 
     // ── InputParser ─────────────────────────────────────────────────

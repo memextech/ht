@@ -120,10 +120,7 @@ mod windows_scrape {
         })
         .await;
 
-        assert!(
-            found,
-            "Prompt not found within deadline: {result:?}"
-        );
+        assert!(found, "Prompt not found within deadline: {result:?}");
 
         // Send exit command via HT's JSON input API, then close stdin
         let exit_msg = r#"{"type":"input","payload":"exit\r\n"}"#;
