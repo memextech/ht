@@ -100,29 +100,14 @@ fn start_pty(
         }
     };
 
-    #[cfg(unix)]
-    {
-        Ok(tokio::spawn(pty::spawn(
-            command_str,
-            winsize,
-            input_rx,
-            output_tx,
-            resize_rx,
-            initial_input,
-        )?))
-    }
-
-    #[cfg(windows)]
-    {
-        Ok(tokio::spawn(pty::spawn(
-            command_str,
-            winsize,
-            input_rx,
-            output_tx,
-            resize_rx,
-            initial_input,
-        )?))
-    }
+    Ok(tokio::spawn(pty::spawn(
+        command_str,
+        winsize,
+        input_rx,
+        output_tx,
+        resize_rx,
+        initial_input,
+    )?))
 }
 
 async fn start_http_api(

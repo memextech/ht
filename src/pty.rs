@@ -630,6 +630,70 @@ enum InputAction {
     GenerateCtrlC,
 }
 
+// Virtual key codes
+#[cfg(windows)]
+const VK_BACK: u16 = 0x08;
+#[cfg(windows)]
+const VK_TAB: u16 = 0x09;
+#[cfg(windows)]
+const VK_RETURN: u16 = 0x0D;
+#[cfg(windows)]
+const VK_ESCAPE: u16 = 0x1B;
+#[cfg(windows)]
+const VK_PRIOR: u16 = 0x21; // Page Up
+#[cfg(windows)]
+const VK_NEXT: u16 = 0x22; // Page Down
+#[cfg(windows)]
+const VK_END: u16 = 0x23;
+#[cfg(windows)]
+const VK_HOME: u16 = 0x24;
+#[cfg(windows)]
+const VK_LEFT: u16 = 0x25;
+#[cfg(windows)]
+const VK_UP: u16 = 0x26;
+#[cfg(windows)]
+const VK_RIGHT: u16 = 0x27;
+#[cfg(windows)]
+const VK_DOWN: u16 = 0x28;
+#[cfg(windows)]
+const VK_INSERT: u16 = 0x2D;
+#[cfg(windows)]
+const VK_DELETE: u16 = 0x2E;
+#[cfg(windows)]
+const VK_F1: u16 = 0x70;
+#[cfg(windows)]
+const VK_F2: u16 = 0x71;
+#[cfg(windows)]
+const VK_F3: u16 = 0x72;
+#[cfg(windows)]
+const VK_F4: u16 = 0x73;
+#[cfg(windows)]
+const VK_F5: u16 = 0x74;
+#[cfg(windows)]
+const VK_F6: u16 = 0x75;
+#[cfg(windows)]
+const VK_F7: u16 = 0x76;
+#[cfg(windows)]
+const VK_F8: u16 = 0x77;
+#[cfg(windows)]
+const VK_F9: u16 = 0x78;
+#[cfg(windows)]
+const VK_F10: u16 = 0x79;
+#[cfg(windows)]
+const VK_F11: u16 = 0x7A;
+#[cfg(windows)]
+const VK_F12: u16 = 0x7B;
+#[cfg(windows)]
+const VK_PACKET: u16 = 0xE7;
+
+// Modifier flags for dwControlKeyState
+#[cfg(windows)]
+const LEFT_ALT_PRESSED: u32 = 0x0002;
+#[cfg(windows)]
+const LEFT_CTRL_PRESSED: u32 = 0x0008;
+#[cfg(windows)]
+const SHIFT_PRESSED: u32 = 0x0010;
+
 #[cfg(windows)]
 struct InputParser {
     pending: Vec<u8>,
@@ -728,48 +792,48 @@ impl InputParser {
                     let final_byte = input[i + 2];
                     match final_byte {
                         b'A' => {
-                            actions.push(self.make_vk_action(0x26, 0, 0)); // VK_UP
+                            actions.push(self.make_key_action(VK_UP, 0, 0));
                             i += 3;
                         }
                         b'B' => {
-                            actions.push(self.make_vk_action(0x28, 0, 0)); // VK_DOWN
+                            actions.push(self.make_key_action(VK_DOWN, 0, 0));
                             i += 3;
                         }
                         b'C' => {
-                            actions.push(self.make_vk_action(0x27, 0, 0)); // VK_RIGHT
+                            actions.push(self.make_key_action(VK_RIGHT, 0, 0));
                             i += 3;
                         }
                         b'D' => {
-                            actions.push(self.make_vk_action(0x25, 0, 0)); // VK_LEFT
+                            actions.push(self.make_key_action(VK_LEFT, 0, 0));
                             i += 3;
                         }
                         b'H' => {
-                            actions.push(self.make_vk_action(0x24, 0, 0)); // VK_HOME
+                            actions.push(self.make_key_action(VK_HOME, 0, 0));
                             i += 3;
                         }
                         b'F' => {
-                            actions.push(self.make_vk_action(0x23, 0, 0)); // VK_END
+                            actions.push(self.make_key_action(VK_END, 0, 0));
                             i += 3;
                         }
                         b'P' => {
-                            actions.push(self.make_vk_action(0x70, 0, 0)); // VK_F1
+                            actions.push(self.make_key_action(VK_F1, 0, 0));
                             i += 3;
                         }
                         b'Q' => {
-                            actions.push(self.make_vk_action(0x71, 0, 0)); // VK_F2
+                            actions.push(self.make_key_action(VK_F2, 0, 0));
                             i += 3;
                         }
                         b'R' => {
-                            actions.push(self.make_vk_action(0x72, 0, 0)); // VK_F3
+                            actions.push(self.make_key_action(VK_F3, 0, 0));
                             i += 3;
                         }
                         b'S' => {
-                            actions.push(self.make_vk_action(0x73, 0, 0)); // VK_F4
+                            actions.push(self.make_key_action(VK_F4, 0, 0));
                             i += 3;
                         }
                         _ => {
                             // Unknown SS3 — passthrough
-                            actions.push(self.make_key_action(0x1b_u16, 0x1b, 0));
+                            actions.push(self.make_key_action(VK_ESCAPE, 0x1b, 0));
                             actions.extend(self.byte_to_actions(b'O'));
                             actions.extend(self.byte_to_actions(final_byte));
                             i += 3;
@@ -779,12 +843,12 @@ impl InputParser {
                     // Alt+printable character
                     let ch = next as char;
                     let (vk, mut mods) = self.vkscan_char(ch);
-                    mods |= 0x0002; // LEFT_ALT_PRESSED
+                    mods |= LEFT_ALT_PRESSED;
                     actions.push(self.make_key_action(vk, next as u16, mods));
                     i += 2;
                 } else {
                     // ESC followed by non-printable — send ESC then the byte
-                    actions.push(self.make_key_action(0x1b_u16, 0x1b, 0));
+                    actions.push(self.make_key_action(VK_ESCAPE, 0x1b, 0));
                     i += 1;
                 }
             } else if b == 0x03 {
@@ -794,11 +858,7 @@ impl InputParser {
                     actions.push(InputAction::GenerateCtrlC);
                 } else {
                     // Raw mode — send as key event
-                    actions.push(self.make_key_action(
-                        b'C' as u16,
-                        0x03,
-                        0x0008, // LEFT_CTRL_PRESSED
-                    ));
+                    actions.push(self.make_key_action(b'C' as u16, 0x03, LEFT_CTRL_PRESSED));
                 }
                 i += 1;
             } else if b >= 0x80 {
@@ -848,22 +908,22 @@ impl InputParser {
 
     fn byte_to_actions(&self, b: u8) -> Vec<InputAction> {
         match b {
-            0x0D => vec![self.make_vk_action(0x0D, b as u16, 0)], // VK_RETURN
+            0x0D => vec![self.make_key_action(VK_RETURN, b as u16, 0)],
             0x0A => {
                 // Ctrl+J (NOT VK_RETURN)
-                vec![self.make_key_action(b'J' as u16, 0x0A, 0x0008)] // LEFT_CTRL_PRESSED
+                vec![self.make_key_action(b'J' as u16, 0x0A, LEFT_CTRL_PRESSED)]
             }
-            0x09 => vec![self.make_vk_action(0x09, b as u16, 0)], // VK_TAB
-            0x08 | 0x7F => vec![self.make_vk_action(0x08, 0x08, 0)], // VK_BACK
-            0x1B => vec![self.make_key_action(0x1b_u16, 0x1B, 0)], // VK_ESCAPE
+            0x09 => vec![self.make_key_action(VK_TAB, b as u16, 0)],
+            0x08 | 0x7F => vec![self.make_key_action(VK_BACK, 0x08, 0)],
+            0x1B => vec![self.make_key_action(VK_ESCAPE, 0x1B, 0)],
             0x1A => {
                 // Ctrl+Z
-                vec![self.make_key_action(b'Z' as u16, 0x1A, 0x0008)]
+                vec![self.make_key_action(b'Z' as u16, 0x1A, LEFT_CTRL_PRESSED)]
             }
             0x01..=0x02 | 0x04..=0x08 | 0x0B..=0x0C | 0x0E..=0x19 => {
                 // Other Ctrl+letter combinations
                 let letter = b'A' + (b - 1);
-                vec![self.make_key_action(letter as u16, b as u16, 0x0008)]
+                vec![self.make_key_action(letter as u16, b as u16, LEFT_CTRL_PRESSED)]
             }
             0x20..=0x7E => {
                 // Printable ASCII
@@ -878,8 +938,7 @@ impl InputParser {
 
     fn char_to_actions(&self, ch: char) -> Vec<InputAction> {
         let (vk, mods) = self.vkscan_char(ch);
-        if vk == 0xE7 {
-            // VK_PACKET fallback
+        if vk == VK_PACKET {
             self.vk_packet_for_char(ch)
         } else {
             vec![self.make_key_action(vk, ch as u16, mods)]
@@ -891,19 +950,19 @@ impl InputParser {
     fn vkscan_char(&self, ch: char) -> (u16, u32) {
         let result = unsafe { VkKeyScanW(ch as u16) };
         if result as u16 == 0xFFFF {
-            return (0xE7, 0); // VK_PACKET
+            return (VK_PACKET, 0);
         }
         let vk = (result & 0xFF) as u16;
         let shift_state = ((result >> 8) & 0xFF) as u8;
         let mut mods = 0u32;
         if shift_state & 1 != 0 {
-            mods |= 0x0010; // SHIFT_PRESSED
+            mods |= SHIFT_PRESSED;
         }
         if shift_state & 2 != 0 {
-            mods |= 0x0008; // LEFT_CTRL_PRESSED
+            mods |= LEFT_CTRL_PRESSED;
         }
         if shift_state & 4 != 0 {
-            mods |= 0x0002; // LEFT_ALT_PRESSED
+            mods |= LEFT_ALT_PRESSED;
         }
         (vk, mods)
     }
@@ -919,7 +978,7 @@ impl InputParser {
 
     fn make_vk_packet_action(&self, unicode_char: u16) -> InputAction {
         let mut ke: KEY_EVENT_RECORD = unsafe { zeroed() };
-        ke.wVirtualKeyCode = 0xE7; // VK_PACKET
+        ke.wVirtualKeyCode = VK_PACKET;
         ke.wVirtualScanCode = 0;
         ke.uChar.UnicodeChar = unicode_char;
         ke.dwControlKeyState = 0;
@@ -938,20 +997,16 @@ impl InputParser {
         InputAction::KeyEvent(ke)
     }
 
-    fn make_vk_action(&self, vk: u16, unicode_char: u16, mods: u32) -> InputAction {
-        self.make_key_action(vk, unicode_char, mods)
-    }
-
     /// Parses modifier parameter value to dwControlKeyState flags.
     fn modifier_to_flags(modifier: u8) -> u32 {
         match modifier {
-            2 => 0x0010,                   // Shift
-            3 => 0x0002,                   // Alt
-            4 => 0x0002 | 0x0010,          // Alt+Shift
-            5 => 0x0008,                   // Ctrl
-            6 => 0x0008 | 0x0010,          // Ctrl+Shift
-            7 => 0x0008 | 0x0002,          // Ctrl+Alt
-            8 => 0x0008 | 0x0002 | 0x0010, // Ctrl+Alt+Shift
+            2 => SHIFT_PRESSED,
+            3 => LEFT_ALT_PRESSED,
+            4 => LEFT_ALT_PRESSED | SHIFT_PRESSED,
+            5 => LEFT_CTRL_PRESSED,
+            6 => LEFT_CTRL_PRESSED | SHIFT_PRESSED,
+            7 => LEFT_CTRL_PRESSED | LEFT_ALT_PRESSED,
+            8 => LEFT_CTRL_PRESSED | LEFT_ALT_PRESSED | SHIFT_PRESSED,
             _ => 0,
         }
     }
@@ -993,36 +1048,34 @@ impl InputParser {
         match final_byte {
             b'A' | b'B' | b'C' | b'D' => {
                 let vk = match final_byte {
-                    b'A' => 0x26u16, // VK_UP
-                    b'B' => 0x28,    // VK_DOWN
-                    b'C' => 0x27,    // VK_RIGHT
-                    b'D' => 0x25,    // VK_LEFT
+                    b'A' => VK_UP,
+                    b'B' => VK_DOWN,
+                    b'C' => VK_RIGHT,
+                    b'D' => VK_LEFT,
                     _ => unreachable!(),
                 };
                 let mods = self.extract_modifier(&params);
-                ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed)
+                ParseResult::Complete(vec![self.make_key_action(vk, 0, mods)], consumed)
             }
             b'H' => {
-                // Home
                 let mods = self.extract_modifier(&params);
-                ParseResult::Complete(vec![self.make_vk_action(0x24, 0, mods)], consumed)
+                ParseResult::Complete(vec![self.make_key_action(VK_HOME, 0, mods)], consumed)
             }
             b'F' => {
-                // End
                 let mods = self.extract_modifier(&params);
-                ParseResult::Complete(vec![self.make_vk_action(0x23, 0, mods)], consumed)
+                ParseResult::Complete(vec![self.make_key_action(VK_END, 0, mods)], consumed)
             }
             b'P' | b'Q' | b'R' | b'S' => {
                 // F1-F4 (CSI form with modifier: CSI 1;mod P/Q/R/S)
                 let vk = match final_byte {
-                    b'P' => 0x70u16, // VK_F1
-                    b'Q' => 0x71,
-                    b'R' => 0x72,
-                    b'S' => 0x73,
+                    b'P' => VK_F1,
+                    b'Q' => VK_F2,
+                    b'R' => VK_F3,
+                    b'S' => VK_F4,
                     _ => unreachable!(),
                 };
                 let mods = self.extract_modifier(&params);
-                ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed)
+                ParseResult::Complete(vec![self.make_key_action(vk, 0, mods)], consumed)
             }
             b'~' => {
                 // Tilde sequences: CSI num ~ or CSI num;mod ~
@@ -1037,22 +1090,22 @@ impl InputParser {
                     0
                 };
                 let vk = match num {
-                    2 => Some(0x2Du16), // VK_INSERT
-                    3 => Some(0x2E),    // VK_DELETE
-                    5 => Some(0x21),    // VK_PRIOR (PgUp)
-                    6 => Some(0x22),    // VK_NEXT (PgDn)
-                    15 => Some(0x74),   // VK_F5
-                    17 => Some(0x75),   // VK_F6
-                    18 => Some(0x76),   // VK_F7
-                    19 => Some(0x77),   // VK_F8
-                    20 => Some(0x78),   // VK_F9
-                    21 => Some(0x79),   // VK_F10
-                    23 => Some(0x7A),   // VK_F11
-                    24 => Some(0x7B),   // VK_F12
+                    2 => Some(VK_INSERT),
+                    3 => Some(VK_DELETE),
+                    5 => Some(VK_PRIOR),
+                    6 => Some(VK_NEXT),
+                    15 => Some(VK_F5),
+                    17 => Some(VK_F6),
+                    18 => Some(VK_F7),
+                    19 => Some(VK_F8),
+                    20 => Some(VK_F9),
+                    21 => Some(VK_F10),
+                    23 => Some(VK_F11),
+                    24 => Some(VK_F12),
                     _ => None,
                 };
                 if let Some(vk) = vk {
-                    ParseResult::Complete(vec![self.make_vk_action(vk, 0, mods)], consumed)
+                    ParseResult::Complete(vec![self.make_key_action(vk, 0, mods)], consumed)
                 } else {
                     ParseResult::Unrecognized(consumed)
                 }
@@ -1108,8 +1161,6 @@ struct ScrapePty {
     thread_handle: Option<OwnedHandle>,
     conout: SendHandle,
     conin: SendHandle,
-    _cols: u16,
-    _rows: u16,
     needs_cleanup: bool,
 }
 
@@ -1356,13 +1407,7 @@ impl ScrapePty {
             let _ = SetConsoleWindowInfo(conout, true, &viewport);
         }
 
-        // 10. Verify actual buffer size
-        let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
-        unsafe { GetConsoleScreenBufferInfo(conout, &mut csbi) }?;
-        let actual_cols = (csbi.srWindow.Right - csbi.srWindow.Left + 1) as u16;
-        let actual_rows = (csbi.srWindow.Bottom - csbi.srWindow.Top + 1) as u16;
-
-        // 11. Disarm guard — ownership transfers to ScrapePty
+        // 10. Disarm guard — ownership transfers to ScrapePty
         guard.disarm();
 
         Ok(ScrapePty {
@@ -1371,8 +1416,6 @@ impl ScrapePty {
             thread_handle,
             conout: conout_handle,
             conin: conin_handle,
-            _cols: actual_cols,
-            _rows: actual_rows,
             needs_cleanup: true,
         })
     }
