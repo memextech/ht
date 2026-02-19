@@ -96,7 +96,14 @@ mod windows_scrape {
         let bin = env!("CARGO_BIN_EXE_ht");
 
         let mut child = tokio::process::Command::new(bin)
-            .args(["cmd.exe", "/k", "prompt", "TEST_PROMPT$G$S"])
+            .args([
+                "--subscribe",
+                "output",
+                "cmd.exe",
+                "/k",
+                "prompt",
+                "TEST_PROMPT$G$S",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -110,7 +117,7 @@ mod windows_scrape {
         let prompt_marker = "TEST_PROMPT>";
         let mut found = false;
         let deadline = Duration::from_secs(15);
-        let result = timeout(deadline, async {
+        let _ = timeout(deadline, async {
             while let Ok(Some(line)) = stdout.next_line().await {
                 if line.contains(prompt_marker) {
                     found = true;
@@ -120,18 +127,22 @@ mod windows_scrape {
         })
         .await;
 
-        assert!(found, "Prompt not found within deadline: {result:?}");
+        if found {
+            // Send exit command via HT's JSON input API, then close stdin
+            let exit_msg = r#"{"type":"input","payload":"exit\r\n"}"#;
+            let _ = stdin.write_all(exit_msg.as_bytes()).await;
+            let _ = stdin.write_all(b"\n").await;
+            drop(stdin);
 
-        // Send exit command via HT's JSON input API, then close stdin
-        let exit_msg = r#"{"type":"input","payload":"exit\r\n"}"#;
-        let _ = stdin.write_all(exit_msg.as_bytes()).await;
-        let _ = stdin.write_all(b"\n").await;
-        drop(stdin);
-
-        let status = timeout(Duration::from_secs(5), child.wait())
-            .await
-            .expect("ht process timed out")
-            .expect("failed to wait on ht");
-        assert!(status.success(), "ht exited with: {status}");
+            let status = timeout(Duration::from_secs(5), child.wait())
+                .await
+                .expect("ht process timed out")
+                .expect("failed to wait on ht");
+            assert!(status.success(), "ht exited with: {status}");
+        } else {
+            // Kill the child so we don't hang forever
+            let _ = child.kill().await;
+            panic!("Prompt '{prompt_marker}' not found within {deadline:?}");
+        }
     }
 }
