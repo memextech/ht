@@ -85,10 +85,19 @@ mod unix {
 
 #[cfg(windows)]
 mod windows_scrape {
+    use serde_json::Value;
     use std::process::Stdio;
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::time::timeout;
+
+    fn screen_text(vt: &avt::Vt) -> String {
+        vt.view()
+            .iter()
+            .map(|l| l.text())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     fn assert_shell_available(shell: &str) {
         let found = std::process::Command::new("where")
@@ -122,13 +131,17 @@ mod windows_scrape {
         let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
         let mut stdin = child.stdin.take().unwrap();
 
+        let mut vt = avt::Vt::builder().size(120, 40).resizable(true).build();
         let mut found = false;
-        let mut received_lines: Vec<String> = Vec::new();
         let deadline = Duration::from_secs(deadline_secs);
         let _ = timeout(deadline, async {
             while let Ok(Some(line)) = stdout.next_line().await {
-                received_lines.push(line.clone());
-                if line.contains(prompt_marker) {
+                if let Ok(json) = serde_json::from_str::<Value>(&line) {
+                    if let Some(seq) = json["data"]["seq"].as_str() {
+                        vt.feed_str(seq);
+                    }
+                }
+                if screen_text(&vt).contains(prompt_marker) {
                     found = true;
                     break;
                 }
@@ -165,10 +178,9 @@ mod windows_scrape {
             panic!(
                 "Prompt '{prompt_marker}' not found within {deadline:?}\n\
                  Shell args: {shell_args:?}\n\
-                 Received {} stdout lines:\n{}\n\
+                 Screen contents:\n{}\n\
                  Stderr:\n{stderr_text}",
-                received_lines.len(),
-                received_lines.join("\n"),
+                screen_text(&vt),
             );
         }
     }
