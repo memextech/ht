@@ -464,6 +464,108 @@ fn open_conout() -> Option<OwnedHandle> {
     Some(unsafe { OwnedHandle::from_raw_handle(h.0 as *mut _) })
 }
 
+/// Tracks the desired console size so newly activated screen buffers can be resized.
+#[cfg(windows)]
+struct ConsoleSize {
+    cols: std::sync::atomic::AtomicU16,
+    rows: std::sync::atomic::AtomicU16,
+}
+
+#[cfg(windows)]
+impl ConsoleSize {
+    fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            cols: std::sync::atomic::AtomicU16::new(cols),
+            rows: std::sync::atomic::AtomicU16::new(rows),
+        }
+    }
+
+    fn get(&self) -> (u16, u16) {
+        (
+            self.cols.load(std::sync::atomic::Ordering::Relaxed),
+            self.rows.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    fn set(&self, cols: u16, rows: u16) {
+        self.cols.store(cols, std::sync::atomic::Ordering::Relaxed);
+        self.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(windows)]
+fn clamp_console_dim(value: u16) -> i16 {
+    (value.max(1).min(i16::MAX as u16)) as i16
+}
+
+#[cfg(windows)]
+fn apply_console_size(handle: HANDLE, cols: u16, rows: u16, top: i16) {
+    unsafe {
+        let buf_width = clamp_console_dim(cols);
+        let mut buf_height: i16 = i16::MAX;
+        let small = SMALL_RECT {
+            Left: 0,
+            Top: 0,
+            Right: 0,
+            Bottom: 0,
+        };
+        let _ = SetConsoleWindowInfo(handle, true, &small);
+
+        if SetConsoleScreenBufferSize(
+            handle,
+            COORD {
+                X: buf_width,
+                Y: buf_height,
+            },
+        )
+        .is_err()
+        {
+            buf_height = clamp_console_dim(rows);
+            let _ = SetConsoleScreenBufferSize(
+                handle,
+                COORD {
+                    X: buf_width,
+                    Y: buf_height,
+                },
+            );
+        }
+
+        let viewport_height = clamp_console_dim(rows);
+        let viewport = SMALL_RECT {
+            Left: 0,
+            Top: top,
+            Right: buf_width - 1,
+            Bottom: top + viewport_height - 1,
+        };
+        let _ = SetConsoleWindowInfo(handle, true, &viewport);
+    }
+}
+
+#[cfg(windows)]
+fn ensure_console_size(handle: HANDLE, size: &ConsoleSize) -> Option<CONSOLE_SCREEN_BUFFER_INFO> {
+    unsafe {
+        let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = zeroed();
+        if GetConsoleScreenBufferInfo(handle, &mut csbi).is_err() {
+            return None;
+        }
+
+        let (desired_cols, desired_rows) = size.get();
+        let desired_cols_i16 = clamp_console_dim(desired_cols);
+        let desired_rows_i16 = clamp_console_dim(desired_rows);
+        let current_cols = csbi.dwSize.X;
+        let current_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+
+        if current_cols != desired_cols_i16 || current_rows != desired_rows_i16 {
+            apply_console_size(handle, desired_cols, desired_rows, csbi.srWindow.Top);
+            if GetConsoleScreenBufferInfo(handle, &mut csbi).is_err() {
+                return None;
+            }
+        }
+
+        Some(csbi)
+    }
+}
+
 /// Converts a Windows console attribute word to an ANSI SGR escape sequence.
 #[cfg(windows)]
 fn attr_to_sgr(attr: u16) -> String {
@@ -1198,6 +1300,7 @@ struct ScrapePty {
     conout: SendHandle,
     conin: SendHandle,
     needs_cleanup: bool,
+    size: std::sync::Arc<ConsoleSize>,
 }
 
 #[cfg(windows)]
@@ -1411,40 +1514,12 @@ impl ScrapePty {
         }
 
         // 9. Apply terminal size — viewport = requested size, buffer height = maximum
-        let buf_width = (winsize.ws_col.min(i16::MAX as u16).max(1)) as i16;
-        let buf_height: i16 = i16::MAX;
-
-        unsafe {
-            // Shrink window to 1×1 (always valid)
-            let small = SMALL_RECT {
-                Left: 0,
-                Top: 0,
-                Right: 0,
-                Bottom: 0,
-            };
-            let _ = SetConsoleWindowInfo(conout, true, &small);
-
-            // Set buffer size
-            let _ = SetConsoleScreenBufferSize(
-                conout,
-                COORD {
-                    X: buf_width,
-                    Y: buf_height,
-                },
-            );
-
-            // Set viewport
-            let viewport = SMALL_RECT {
-                Left: 0,
-                Top: 0,
-                Right: buf_width - 1,
-                Bottom: (winsize.ws_row.min(i16::MAX as u16).max(1)) as i16 - 1,
-            };
-            let _ = SetConsoleWindowInfo(conout, true, &viewport);
-        }
+        apply_console_size(conout, winsize.ws_col, winsize.ws_row, 0);
 
         // 10. Disarm guard — ownership transfers to ScrapePty
         guard.disarm();
+
+        let size = std::sync::Arc::new(ConsoleSize::new(winsize.ws_col, winsize.ws_row));
 
         Ok(ScrapePty {
             child_pid,
@@ -1453,6 +1528,7 @@ impl ScrapePty {
             conout: conout_handle,
             conin: conin_handle,
             needs_cleanup: true,
+            size,
         })
     }
 
@@ -1466,6 +1542,7 @@ impl ScrapePty {
         let conout = self.conout;
         let conin = self.conin;
         let child_pid = self.child_pid;
+        let console_size = self.size.clone();
 
         // Take ownership of process/thread handles out of self.
         // self.proc_handle becomes None, so Drop won't try to TerminateProcess.
@@ -1484,6 +1561,7 @@ impl ScrapePty {
 
         // Screen poll thread (spawn_blocking)
         let output_tx_poll = output_tx.clone();
+        let size_for_poll = console_size.clone();
         let mut poll_handle = tokio::task::spawn_blocking(move || {
             let mut prev_viewport: Vec<Vec<Cell>> = Vec::new();
             let mut prev_sr_window_top: i16 = 0;
@@ -1502,10 +1580,10 @@ impl ScrapePty {
                 };
 
                 // Get current screen buffer info
-                let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
-                if unsafe { GetConsoleScreenBufferInfo(conout_h, &mut csbi) }.is_err() {
-                    break;
-                }
+                let mut csbi = match ensure_console_size(conout_h, &size_for_poll) {
+                    Some(info) => info,
+                    None => break,
+                };
 
                 let sr = csbi.srWindow;
                 let viewport_width = (sr.Right - sr.Left + 1) as usize;
@@ -1683,6 +1761,7 @@ impl ScrapePty {
 
         // Resize task
         let resize_conout = conout;
+        let size_for_resize = console_size.clone();
         let resize_task = tokio::spawn(async move {
             let mut resize_rx = resize_rx;
             while let Some((new_cols, new_rows)) = resize_rx.recv().await {
@@ -1694,45 +1773,16 @@ impl ScrapePty {
                 } else {
                     resize_conout.to_handle()
                 };
-                let new_buf_width = (new_cols.min(i16::MAX as u16).max(1)) as i16;
-                let buf_height: i16 = i16::MAX;
-
-                unsafe {
-                    // Shrink to 1×1
-                    let small = SMALL_RECT {
-                        Left: 0,
-                        Top: 0,
-                        Right: 0,
-                        Bottom: 0,
-                    };
-                    let _ = SetConsoleWindowInfo(conout_h, true, &small);
-
-                    // New buffer size
-                    let _ = SetConsoleScreenBufferSize(
-                        conout_h,
-                        COORD {
-                            X: new_buf_width,
-                            Y: buf_height,
-                        },
-                    );
-
-                    // Get current top for viewport positioning
-                    let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = zeroed();
-                    let top = if GetConsoleScreenBufferInfo(conout_h, &mut csbi).is_ok() {
+                let top = {
+                    let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
+                    if unsafe { GetConsoleScreenBufferInfo(conout_h, &mut csbi) }.is_ok() {
                         csbi.srWindow.Top
                     } else {
                         0
-                    };
-
-                    let new_rows_i16 = (new_rows.min(i16::MAX as u16).max(1)) as i16;
-                    let viewport = SMALL_RECT {
-                        Left: 0,
-                        Top: top,
-                        Right: new_buf_width - 1,
-                        Bottom: top + new_rows_i16 - 1,
-                    };
-                    let _ = SetConsoleWindowInfo(conout_h, true, &viewport);
-                }
+                    }
+                };
+                apply_console_size(conout_h, new_cols, new_rows, top);
+                size_for_resize.set(new_cols, new_rows);
             }
         });
 
