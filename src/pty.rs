@@ -1580,7 +1580,7 @@ impl ScrapePty {
                 };
 
                 // Get current screen buffer info
-                let mut csbi = match ensure_console_size(conout_h, &size_for_poll) {
+                let csbi = match ensure_console_size(conout_h, &size_for_poll) {
                     Some(info) => info,
                     None => break,
                 };
