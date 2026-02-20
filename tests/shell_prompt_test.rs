@@ -108,7 +108,7 @@ mod windows_scrape {
     ) {
         let bin = env!("CARGO_BIN_EXE_ht");
 
-        let mut args = vec!["--subscribe", "output"];
+        let mut args = vec!["--subscribe", "output", "--"];
         args.extend_from_slice(shell_args);
 
         let mut child = tokio::process::Command::new(bin)
