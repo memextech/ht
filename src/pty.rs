@@ -428,6 +428,42 @@ struct Cell {
     attr: u16,
 }
 
+/// Opens a fresh handle to the currently active console screen buffer.
+///
+/// `CONOUT$` always resolves to whichever buffer is active *at open time*,
+/// so re-opening it each poll iteration tracks `SetConsoleActiveScreenBuffer`
+/// switches (used by PowerShell 5.x among others).
+#[cfg(windows)]
+fn open_conout() -> Option<OwnedHandle> {
+    let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+    let h = unsafe {
+        CreateFileW(
+            PCWSTR(name.as_ptr()),
+            GENERIC_READ.0 | GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            Default::default(),
+            None,
+        )
+    }
+    .ok()?;
+
+    // Propagate VT processing to the (possibly new) active buffer so the
+    // child's ANSI sequences are interpreted rather than displayed literally.
+    unsafe {
+        let mut mode = CONSOLE_MODE(0);
+        if GetConsoleMode(h, &mut mode).is_ok() {
+            let _ = SetConsoleMode(
+                h,
+                mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT,
+            );
+        }
+    }
+
+    Some(unsafe { OwnedHandle::from_raw_handle(h.0 as *mut _) })
+}
+
 /// Converts a Windows console attribute word to an ANSI SGR escape sequence.
 #[cfg(windows)]
 fn attr_to_sgr(attr: u16) -> String {
@@ -1456,7 +1492,14 @@ impl ScrapePty {
             while !stop_flag_poll.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(40));
 
-                let conout_h = conout.to_handle();
+                // Re-open CONOUT$ to track active screen buffer switches.
+                // Falls back to the original handle if the open fails.
+                let conout_owned = open_conout();
+                let conout_h = if let Some(ref h) = conout_owned {
+                    HANDLE(h.as_raw_handle() as *mut _)
+                } else {
+                    conout.to_handle()
+                };
 
                 // Get current screen buffer info
                 let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
@@ -1643,7 +1686,14 @@ impl ScrapePty {
         let resize_task = tokio::spawn(async move {
             let mut resize_rx = resize_rx;
             while let Some((new_cols, new_rows)) = resize_rx.recv().await {
-                let conout_h = resize_conout.to_handle();
+                // Re-open CONOUT$ to track active screen buffer switches.
+                // Falls back to the original handle if the open fails.
+                let conout_owned = open_conout();
+                let conout_h = if let Some(ref h) = conout_owned {
+                    HANDLE(h.as_raw_handle() as *mut _)
+                } else {
+                    resize_conout.to_handle()
+                };
                 let new_buf_width = (new_cols.min(i16::MAX as u16).max(1)) as i16;
                 let buf_height: i16 = i16::MAX;
 

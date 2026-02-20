@@ -216,16 +216,14 @@ mod windows_scrape {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn powershell_prompt_appears_via_scrape() {
         assert_shell_available("powershell.exe");
-        // Base64-encoded UTF-16LE: function prompt { 'TEST_PROMPT> ' }
-        // -EncodedCommand avoids powershell.exe's non-standard argument parsing
         assert_shell_prompt_appears(
             &[
                 "powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-NoExit",
-                "-EncodedCommand",
-                "ZgB1AG4AYwB0AGkAbwBuACAAcAByAG8AbQBwAHQAIAB7ACAAJwBUAEUAUwBUAF8AUABSAE8ATQBQAFQAPgAgACcAIAB9AA==",
+                "-Command",
+                "function prompt { 'TEST_PROMPT> ' }",
             ],
             "TEST_PROMPT>",
             20,
