@@ -90,20 +90,29 @@ mod windows_scrape {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::time::timeout;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shell_prompt_appears_via_scrape() {
-        // Build the binary path (cargo test puts it in target/debug/)
+    fn assert_shell_available(shell: &str) {
+        let found = std::process::Command::new("where")
+            .arg(shell)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(found, "{shell} not found on PATH");
+    }
+
+    async fn assert_shell_prompt_appears(
+        shell_args: &[&str],
+        prompt_marker: &str,
+        deadline_secs: u64,
+    ) {
         let bin = env!("CARGO_BIN_EXE_ht");
 
+        let mut args = vec!["--subscribe", "output"];
+        args.extend_from_slice(shell_args);
+
         let mut child = tokio::process::Command::new(bin)
-            .args([
-                "--subscribe",
-                "output",
-                "cmd.exe",
-                "/k",
-                "prompt",
-                "TEST_PROMPT$G$S",
-            ])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -113,10 +122,8 @@ mod windows_scrape {
         let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
         let mut stdin = child.stdin.take().unwrap();
 
-        // Read JSON lines from HT's stdout, look for the prompt marker
-        let prompt_marker = "TEST_PROMPT>";
         let mut found = false;
-        let deadline = Duration::from_secs(15);
+        let deadline = Duration::from_secs(deadline_secs);
         let _ = timeout(deadline, async {
             while let Ok(Some(line)) = stdout.next_line().await {
                 if line.contains(prompt_marker) {
@@ -128,7 +135,6 @@ mod windows_scrape {
         .await;
 
         if found {
-            // Send exit command via HT's JSON input API, then close stdin
             let exit_msg = r#"{"type":"input","payload":"exit\r\n"}"#;
             let _ = stdin.write_all(exit_msg.as_bytes()).await;
             let _ = stdin.write_all(b"\n").await;
@@ -140,9 +146,54 @@ mod windows_scrape {
                 .expect("failed to wait on ht");
             assert!(status.success(), "ht exited with: {status}");
         } else {
-            // Kill the child so we don't hang forever
             let _ = child.kill().await;
             panic!("Prompt '{prompt_marker}' not found within {deadline:?}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shell_prompt_appears_via_scrape() {
+        assert_shell_prompt_appears(
+            &["cmd.exe", "/k", "prompt", "TEST_PROMPT$G$S"],
+            "TEST_PROMPT>",
+            15,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pwsh_prompt_appears_via_scrape() {
+        assert_shell_available("pwsh.exe");
+        assert_shell_prompt_appears(
+            &[
+                "pwsh.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                "function prompt { 'TEST_PROMPT> ' }",
+            ],
+            "TEST_PROMPT>",
+            20,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn powershell_prompt_appears_via_scrape() {
+        assert_shell_available("powershell.exe");
+        assert_shell_prompt_appears(
+            &[
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                "function prompt { 'TEST_PROMPT> ' }",
+            ],
+            "TEST_PROMPT>",
+            20,
+        )
+        .await;
     }
 }
