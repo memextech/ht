@@ -123,9 +123,11 @@ mod windows_scrape {
         let mut stdin = child.stdin.take().unwrap();
 
         let mut found = false;
+        let mut received_lines: Vec<String> = Vec::new();
         let deadline = Duration::from_secs(deadline_secs);
         let _ = timeout(deadline, async {
             while let Ok(Some(line)) = stdout.next_line().await {
+                received_lines.push(line.clone());
                 if line.contains(prompt_marker) {
                     found = true;
                     break;
@@ -146,8 +148,28 @@ mod windows_scrape {
                 .expect("failed to wait on ht");
             assert!(status.success(), "ht exited with: {status}");
         } else {
+            let stderr = child.stderr.take();
             let _ = child.kill().await;
-            panic!("Prompt '{prompt_marker}' not found within {deadline:?}");
+            let stderr_text = match stderr {
+                Some(se) => {
+                    let mut buf = String::new();
+                    let _ = timeout(
+                        Duration::from_secs(1),
+                        tokio::io::AsyncReadExt::read_to_string(&mut BufReader::new(se), &mut buf),
+                    )
+                    .await;
+                    buf
+                }
+                None => String::new(),
+            };
+            panic!(
+                "Prompt '{prompt_marker}' not found within {deadline:?}\n\
+                 Shell args: {shell_args:?}\n\
+                 Received {} stdout lines:\n{}\n\
+                 Stderr:\n{stderr_text}",
+                received_lines.len(),
+                received_lines.join("\n"),
+            );
         }
     }
 
