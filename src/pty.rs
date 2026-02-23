@@ -729,8 +729,10 @@ fn patch_char_info_chars(handle: HANDLE, buf: &mut [CHAR_INFO], origin: COORD, t
     }
     let mut char_buf: Vec<u16> = vec![0u16; total];
     let mut chars_read: u32 = 0;
+    let cp_guard = CpGuard::enter_if_utf8();
     let result =
         unsafe { ReadConsoleOutputCharacterW(handle, &mut char_buf, origin, &mut chars_read) };
+    drop(cp_guard);
 
     if console_diag_enabled() {
         let suspicious = result.is_err()
