@@ -62,9 +62,10 @@ use windows::Win32::System::Console::{
     ATTACH_PARENT_PROCESS, AttachConsole, CHAR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
     CTRL_C_EVENT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleMode,
-    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD, ReadConsoleOutputW,
-    SMALL_RECT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode,
-    SetConsoleScreenBufferSize, SetConsoleWindowInfo, WriteConsoleInputW,
+    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD,
+    ReadConsoleOutputCharacterW, ReadConsoleOutputW, SMALL_RECT, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleScreenBufferSize,
+    SetConsoleWindowInfo, WriteConsoleInputW,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::STARTF_USESHOWWINDOW;
@@ -705,6 +706,26 @@ fn decode_char_info_row(row: &[CHAR_INFO]) -> Vec<Cell> {
         i += 1;
     }
     cells
+}
+
+/// Patches `CHAR_INFO` UnicodeChar fields using `ReadConsoleOutputCharacterW`.
+/// Works around a legacy console host bug where `ReadConsoleOutputW` returns
+/// zeroed `UnicodeChar` fields under CP 65001 (UTF-8 system locale).
+#[cfg(windows)]
+fn patch_char_info_chars(handle: HANDLE, buf: &mut [CHAR_INFO], origin: COORD, total: usize) {
+    if total == 0 || buf.len() < total {
+        return;
+    }
+    let mut char_buf: Vec<u16> = vec![0u16; total];
+    let mut chars_read: u32 = 0;
+    if unsafe { ReadConsoleOutputCharacterW(handle, &mut char_buf, origin, &mut chars_read) }
+        .is_err()
+    {
+        return; // fall back to whatever ReadConsoleOutputW returned
+    }
+    for i in 0..(chars_read as usize).min(total) {
+        buf[i].Char.UnicodeChar = char_buf[i];
+    }
 }
 
 /// Diffs previous and current viewport buffers and emits ANSI escape sequences.
@@ -1636,6 +1657,15 @@ impl ScrapePty {
                     }
                     .is_ok()
                     {
+                        patch_char_info_chars(
+                            conout_h,
+                            &mut scroll_buf,
+                            COORD {
+                                X: sr.Left,
+                                Y: scroll_start,
+                            },
+                            viewport_width * read_height,
+                        );
                         for row_idx in 0..read_height {
                             let start = row_idx * viewport_width;
                             let end = start + viewport_width;
@@ -1687,6 +1717,16 @@ impl ScrapePty {
                 {
                     break;
                 }
+
+                patch_char_info_chars(
+                    conout_h,
+                    &mut buf,
+                    COORD {
+                        X: sr.Left,
+                        Y: sr.Top,
+                    },
+                    viewport_width * viewport_height,
+                );
 
                 // Decode CHAR_INFO buffer into Cell grid
                 let mut curr_viewport: Vec<Vec<Cell>> = Vec::with_capacity(viewport_height);
