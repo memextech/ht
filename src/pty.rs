@@ -647,9 +647,17 @@ fn decode_char_info_row(row: &[CHAR_INFO]) -> Vec<Cell> {
         let attrs = ci.Attributes;
 
         if attrs & LVB_TRAILING_BYTE != 0 {
-            // Padding cell for a wide character, skip
-            i += 1;
-            continue;
+            let raw_char = unsafe { ci.Char.UnicodeChar };
+            // Only skip if this is true padding for a wide character:
+            // either the cell is empty (UnicodeChar == 0) or the previous
+            // cell had LVB_LEADING_BYTE (confirming a real wide-char pair).
+            let prev_was_leading = i > 0 && (row[i - 1].Attributes & LVB_LEADING_BYTE != 0);
+            if raw_char == 0 || prev_was_leading {
+                i += 1;
+                continue;
+            }
+            // Otherwise the flag is spurious (e.g. CP 65001 on legacy conhost),
+            // fall through and treat as a normal cell.
         }
 
         let raw_char = unsafe { ci.Char.UnicodeChar };
