@@ -62,10 +62,10 @@ use windows::Win32::System::Console::{
     ATTACH_PARENT_PROCESS, AttachConsole, CHAR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
     CTRL_C_EVENT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleMode,
-    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD,
+    GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD,
     ReadConsoleOutputCharacterW, ReadConsoleOutputW, SMALL_RECT, STD_INPUT_HANDLE,
-    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleScreenBufferSize,
-    SetConsoleWindowInfo, WriteConsoleInputW,
+    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
+    SetConsoleScreenBufferSize, SetConsoleWindowInfo, WriteConsoleInputW,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::STARTF_USESHOWWINDOW;
@@ -708,9 +708,20 @@ fn decode_char_info_row(row: &[CHAR_INFO]) -> Vec<Cell> {
     cells
 }
 
+/// Returns `true` when the `HT_CONSOLE_DIAG` environment variable is set.
+/// Result is cached after the first check.
+#[cfg(windows)]
+fn console_diag_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("HT_CONSOLE_DIAG").is_some())
+}
+
 /// Patches `CHAR_INFO` UnicodeChar fields using `ReadConsoleOutputCharacterW`.
 /// Works around a legacy console host bug where `ReadConsoleOutputW` returns
 /// zeroed `UnicodeChar` fields under CP 65001 (UTF-8 system locale).
+///
+/// When `HT_CONSOLE_DIAG=1` is set, logs the **first** suspicious result
+/// (API error or first 16 chars all zero) to stderr.
 #[cfg(windows)]
 fn patch_char_info_chars(handle: HANDLE, buf: &mut [CHAR_INFO], origin: COORD, total: usize) {
     if total == 0 || buf.len() < total {
@@ -718,13 +729,68 @@ fn patch_char_info_chars(handle: HANDLE, buf: &mut [CHAR_INFO], origin: COORD, t
     }
     let mut char_buf: Vec<u16> = vec![0u16; total];
     let mut chars_read: u32 = 0;
-    if unsafe { ReadConsoleOutputCharacterW(handle, &mut char_buf, origin, &mut chars_read) }
-        .is_err()
-    {
-        return; // fall back to whatever ReadConsoleOutputW returned
+    let result =
+        unsafe { ReadConsoleOutputCharacterW(handle, &mut char_buf, origin, &mut chars_read) };
+
+    if console_diag_enabled() {
+        let suspicious = result.is_err()
+            || chars_read == 0
+            || char_buf[..(chars_read as usize).min(total).min(16)]
+                .iter()
+                .all(|&c| c == 0);
+        if suspicious {
+            static LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let n = (chars_read as usize).min(total).min(16);
+                eprintln!(
+                    "[ht-diag] patch_chars: result={result:?} chars_read={chars_read} \
+                     total={total} origin=({},{}) sample={:?} cp={}",
+                    origin.X,
+                    origin.Y,
+                    &char_buf[..n],
+                    unsafe { GetConsoleOutputCP() },
+                );
+            }
+        }
+    }
+
+    if result.is_err() {
+        return;
     }
     for i in 0..(chars_read as usize).min(total) {
         buf[i].Char.UnicodeChar = char_buf[i];
+    }
+}
+
+/// RAII guard that temporarily switches the console output code page from
+/// 65001 (UTF-8) to 437 (OEM US) for the duration of a synchronous
+/// `ReadConsoleOutputW` call. The original CP is restored on drop.
+#[cfg(windows)]
+struct CpGuard {
+    original: u32,
+    changed: bool,
+}
+
+#[cfg(windows)]
+impl CpGuard {
+    fn enter_if_utf8() -> Self {
+        let original = unsafe { GetConsoleOutputCP() };
+        let changed = if original == 65001 {
+            unsafe { SetConsoleOutputCP(437) }.is_ok()
+        } else {
+            false
+        };
+        Self { original, changed }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CpGuard {
+    fn drop(&mut self) {
+        if self.changed {
+            let _ = unsafe { SetConsoleOutputCP(self.original) };
+        }
     }
 }
 
@@ -1646,17 +1712,20 @@ impl ScrapePty {
                         Bottom: scroll_start + read_height as i16 - 1,
                     };
 
-                    if unsafe {
-                        ReadConsoleOutputW(
-                            conout_h,
-                            scroll_buf.as_mut_ptr(),
-                            scroll_size,
-                            scroll_coord,
-                            &mut scroll_rect,
-                        )
-                    }
-                    .is_ok()
-                    {
+                    let scroll_ok = {
+                        let _cp = CpGuard::enter_if_utf8();
+                        unsafe {
+                            ReadConsoleOutputW(
+                                conout_h,
+                                scroll_buf.as_mut_ptr(),
+                                scroll_size,
+                                scroll_coord,
+                                &mut scroll_rect,
+                            )
+                        }
+                        .is_ok()
+                    };
+                    if scroll_ok {
                         patch_char_info_chars(
                             conout_h,
                             &mut scroll_buf,
@@ -1704,17 +1773,20 @@ impl ScrapePty {
                     Bottom: sr.Bottom,
                 };
 
-                if unsafe {
-                    ReadConsoleOutputW(
-                        conout_h,
-                        buf.as_mut_ptr(),
-                        buf_size,
-                        buf_coord,
-                        &mut read_region,
-                    )
-                }
-                .is_err()
-                {
+                let read_ok = {
+                    let _cp = CpGuard::enter_if_utf8();
+                    unsafe {
+                        ReadConsoleOutputW(
+                            conout_h,
+                            buf.as_mut_ptr(),
+                            buf_size,
+                            buf_coord,
+                            &mut read_region,
+                        )
+                    }
+                    .is_ok()
+                };
+                if !read_ok {
                     break;
                 }
 
