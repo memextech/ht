@@ -716,52 +716,100 @@ fn console_diag_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("HT_CONSOLE_DIAG").is_some())
 }
 
-/// Patches `CHAR_INFO` UnicodeChar fields using `ReadConsoleOutputCharacterW`.
-/// Works around a legacy console host bug where `ReadConsoleOutputW` returns
-/// zeroed `UnicodeChar` fields under CP 65001 (UTF-8 system locale).
+/// Patches `CHAR_INFO` UnicodeChar fields by re-reading characters directly
+/// via `ReadConsoleOutputCharacterW`. Works around a legacy console host bug
+/// where `ReadConsoleOutputW` returns zeroed `UnicodeChar` fields under
+/// CP 65001 (UTF-8 system locale) by walking the viewport row-by-row and
+/// filling each cell, even if the API returns partial reads.
 ///
 /// When `HT_CONSOLE_DIAG=1` is set, logs the **first** suspicious result
 /// (API error or first 16 chars all zero) to stderr.
 #[cfg(windows)]
-fn patch_char_info_chars(handle: HANDLE, buf: &mut [CHAR_INFO], origin: COORD, total: usize) {
+fn patch_char_info_chars(
+    handle: HANDLE,
+    buf: &mut [CHAR_INFO],
+    origin: COORD,
+    width: usize,
+    height: usize,
+) {
+    let total = match width.checked_mul(height) {
+        Some(t) => t,
+        None => return,
+    };
     if total == 0 || buf.len() < total {
         return;
     }
-    let mut char_buf: Vec<u16> = vec![0u16; total];
-    let mut chars_read: u32 = 0;
-    let cp_guard = CpGuard::enter_if_utf8();
-    let result =
-        unsafe { ReadConsoleOutputCharacterW(handle, &mut char_buf, origin, &mut chars_read) };
-    drop(cp_guard);
-
-    if console_diag_enabled() {
-        let suspicious = result.is_err()
-            || chars_read == 0
-            || char_buf[..(chars_read as usize).min(total).min(16)]
-                .iter()
-                .all(|&c| c == 0);
-        if suspicious {
-            static LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                let n = (chars_read as usize).min(total).min(16);
-                eprintln!(
-                    "[ht-diag] patch_chars: result={result:?} chars_read={chars_read} \
-                     total={total} origin=({},{}) sample={:?} cp={}",
-                    origin.X,
-                    origin.Y,
-                    &char_buf[..n],
-                    unsafe { GetConsoleOutputCP() },
-                );
-            }
-        }
-    }
-
-    if result.is_err() {
+    if width == 0 || height == 0 {
         return;
     }
-    for i in 0..(chars_read as usize).min(total) {
-        buf[i].Char.UnicodeChar = char_buf[i];
+    let mut char_buf: Vec<u16> = vec![0u16; width];
+
+    for row in 0..height {
+        let row_start = row * width;
+        let row_offset_i16 = match i16::try_from(row) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let mut col = 0usize;
+
+        while col < width {
+            let remaining = width - col;
+            let chunk = &mut char_buf[..remaining];
+            let col_offset_i16 = match i16::try_from(col) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let coord = COORD {
+                X: origin.X.saturating_add(col_offset_i16),
+                Y: origin.Y.saturating_add(row_offset_i16),
+            };
+            let mut chars_read: u32 = 0;
+            let cp_guard = CpGuard::enter_if_utf8();
+            let result =
+                unsafe { ReadConsoleOutputCharacterW(handle, chunk, coord, &mut chars_read) };
+            drop(cp_guard);
+
+            if console_diag_enabled() {
+                let suspicious = result.is_err()
+                    || chars_read == 0
+                    || chunk[..(chars_read as usize).min(chunk.len()).min(16)]
+                        .iter()
+                        .all(|&c| c == 0);
+                if suspicious {
+                    static LOGGED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        let n = (chars_read as usize).min(chunk.len()).min(16);
+                        eprintln!(
+                            "[ht-diag] patch_chars: result={result:?} chars_read={chars_read} \
+                             total={total} origin=({},{}) sample={:?} cp={}",
+                            coord.X,
+                            coord.Y,
+                            &chunk[..n],
+                            unsafe { GetConsoleOutputCP() },
+                        );
+                    }
+                }
+            }
+
+            if result.is_err() {
+                return;
+            }
+
+            let read = (chars_read as usize).min(chunk.len());
+            if read == 0 {
+                break;
+            }
+
+            let dest_start = row_start + col;
+            let dest_end = dest_start + read;
+            let dest_slice = &mut buf[dest_start..dest_end];
+            for (cell, ch) in dest_slice.iter_mut().zip(chunk.iter().take(read)) {
+                cell.Char.UnicodeChar = *ch;
+            }
+
+            col += read;
+        }
     }
 }
 
@@ -1755,7 +1803,8 @@ impl ScrapePty {
                                 X: sr.Left,
                                 Y: scroll_start,
                             },
-                            viewport_width * read_height,
+                            viewport_width,
+                            read_height,
                         );
                         for row_idx in 0..read_height {
                             let start = row_idx * viewport_width;
@@ -1819,7 +1868,8 @@ impl ScrapePty {
                         X: sr.Left,
                         Y: sr.Top,
                     },
-                    viewport_width * viewport_height,
+                    viewport_width,
+                    viewport_height,
                 );
 
                 // Decode CHAR_INFO buffer into Cell grid
