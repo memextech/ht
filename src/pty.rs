@@ -1398,6 +1398,7 @@ struct ScrapePty {
     conin: SendHandle,
     needs_cleanup: bool,
     size: std::sync::Arc<ConsoleSize>,
+    original_cp: u32,
 }
 
 #[cfg(windows)]
@@ -1416,6 +1417,9 @@ impl Drop for ScrapePty {
                 }
                 if let Some(ref h) = self.proc_handle {
                     let _ = TerminateProcess(HANDLE(h.as_raw_handle()), 1);
+                }
+                if self.original_cp != 0 {
+                    let _ = SetConsoleOutputCP(self.original_cp);
                 }
                 let _ = SetConsoleCtrlHandler(None, false);
                 let _ = FreeConsole();
@@ -1613,6 +1617,14 @@ impl ScrapePty {
         // 9. Apply terminal size — viewport = requested size, buffer height = maximum
         apply_console_size(conout, winsize.ws_col, winsize.ws_row, 0);
 
+        // 9.5. Prime console output CP away from 65001 so the conhost
+        // has time to settle before the first poll iteration (~40ms later).
+        // CpGuard still handles per-call switching during the poll loop.
+        let original_cp = unsafe { GetConsoleOutputCP() };
+        if original_cp == 65001 {
+            let _ = unsafe { SetConsoleOutputCP(437) };
+        }
+
         // 10. Disarm guard — ownership transfers to ScrapePty
         guard.disarm();
 
@@ -1626,6 +1638,7 @@ impl ScrapePty {
             conin: conin_handle,
             needs_cleanup: true,
             size,
+            original_cp,
         })
     }
 
@@ -1659,6 +1672,7 @@ impl ScrapePty {
         // Screen poll thread (spawn_blocking)
         let output_tx_poll = output_tx.clone();
         let size_for_poll = console_size.clone();
+        let primed_cp = self.original_cp;
         let mut poll_handle = tokio::task::spawn_blocking(move || {
             let mut prev_viewport: Vec<Vec<Cell>> = Vec::new();
             let mut prev_sr_window_top: i16 = 0;
@@ -1666,6 +1680,12 @@ impl ScrapePty {
 
             while !stop_flag_poll.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(40));
+
+                // Restore the original CP after the priming settle period so
+                // CpGuard resumes per-call switching for subsequent reads.
+                if first_poll && primed_cp == 65001 {
+                    let _ = unsafe { SetConsoleOutputCP(primed_cp) };
+                }
 
                 // Re-open CONOUT$ to track active screen buffer switches.
                 // Falls back to the original handle if the open fails.
@@ -1972,6 +1992,11 @@ impl ScrapePty {
 
         // 5. Re-enable Ctrl+C
         let _ = unsafe { SetConsoleCtrlHandler(None, false) };
+
+        // 5.5. Restore console output CP
+        if self.original_cp != 0 {
+            let _ = unsafe { SetConsoleOutputCP(self.original_cp) };
+        }
 
         // 6. Detach from child's console
         let _ = unsafe { FreeConsole() };
