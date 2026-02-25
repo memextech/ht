@@ -185,32 +185,70 @@ mod windows_scrape {
                 None => String::new(),
             };
 
-            let seq_display: Vec<String> = seq_chunks
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let hex: String = s
-                        .bytes()
+            // Run-length compress consecutive identical seq chunks.
+            let mut runs: Vec<(usize, usize, &str)> = Vec::new(); // (start, count, value)
+            for (i, s) in seq_chunks.iter().enumerate() {
+                if let Some(last) = runs.last_mut() {
+                    if last.2 == s.as_str() {
+                        last.1 += 1;
+                        continue;
+                    }
+                }
+                runs.push((i, 1, s.as_str()));
+            }
+
+            let format_run = |r: &(usize, usize, &str)| {
+                let hex: String =
+                    r.2.bytes()
                         .map(|b| format!("{b:02x}"))
                         .collect::<Vec<_>>()
                         .join(" ");
-                    format!("  [{i}] {:?}\n       hex: {hex}", s)
-                })
-                .collect();
+                if r.1 == 1 {
+                    format!("  [{}] {:?}\n       hex: {hex}", r.0, r.2)
+                } else {
+                    let end = r.0 + r.1 - 1;
+                    format!(
+                        "  [{}..{}] {:?} (\u{00d7}{})\n       hex: {hex}",
+                        r.0, end, r.2, r.1
+                    )
+                }
+            };
+
+            // Limit to 30 display entries (first 25 + last 5).
+            let seq_display = if runs.len() <= 30 {
+                runs.iter().map(format_run).collect::<Vec<_>>()
+            } else {
+                let mut v: Vec<String> = runs[..25].iter().map(&format_run).collect();
+                v.push(format!("  ... ({} runs omitted)", runs.len() - 30));
+                v.extend(runs[runs.len() - 5..].iter().map(format_run));
+                v
+            };
+
+            // Limit raw JSON lines: first 10 + last 5.
+            let json_display = if raw_lines.len() <= 15 {
+                raw_lines.join("\n")
+            } else {
+                let mut parts: Vec<&str> = raw_lines[..10].iter().map(|s| s.as_str()).collect();
+                let omit = format!("... ({} lines omitted)", raw_lines.len() - 15);
+                parts.push(&omit);
+                parts.extend(raw_lines[raw_lines.len() - 5..].iter().map(|s| s.as_str()));
+                parts.join("\n")
+            };
 
             panic!(
                 "Prompt '{prompt_marker}' not found within {deadline:?}\n\
                  Exit reason: {exit_reason}\n\
                  Shell args: {shell_args:?}\n\
                  Screen contents:\n{}\n\
-                 Seq chunks ({}):\n{}\n\
+                 Seq chunks ({} chunks, {} runs):\n{}\n\
                  Raw JSON lines ({}):\n{}\n\
                  Stderr:\n{stderr_text}",
                 screen_text(&vt),
                 seq_chunks.len(),
+                runs.len(),
                 seq_display.join("\n"),
                 raw_lines.len(),
-                raw_lines.join("\n"),
+                json_display,
             );
         }
     }

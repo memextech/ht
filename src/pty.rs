@@ -1874,7 +1874,8 @@ impl ScrapePty {
                     break;
                 }
 
-                if needs_char_patching(&buf) {
+                let patching = needs_char_patching(&buf);
+                if patching {
                     patch_char_info_chars(
                         conout_h,
                         &mut buf,
@@ -1885,6 +1886,42 @@ impl ScrapePty {
                         viewport_width,
                         viewport_height,
                     );
+                }
+
+                // One-shot diagnostic: log the first poll where the first row
+                // has any non-zero attributes (i.e. the shell wrote something).
+                if console_diag_enabled() {
+                    let first_row = &buf[..viewport_width.min(buf.len())];
+                    let has_content = first_row.iter().any(|ci| ci.Attributes != 0);
+                    if has_content {
+                        static LOGGED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            let cp_now = unsafe { GetConsoleOutputCP() };
+                            let interesting: Vec<String> = first_row
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, ci)| ci.Attributes != 0)
+                                .take(20)
+                                .map(|(i, ci)| {
+                                    let ch = unsafe { ci.Char.UnicodeChar };
+                                    format!("[{i}] ch=0x{ch:04x} attr=0x{:04x}", ci.Attributes)
+                                })
+                                .collect();
+                            eprintln!(
+                                "[ht-diag] ReadConsoleOutputW: cp={cp_now} \
+                                 needs_patch={patching} cursor=({},{}) \
+                                 viewport=({},{},{},{}) first_row_cells:\n  {}",
+                                csbi.dwCursorPosition.X,
+                                csbi.dwCursorPosition.Y,
+                                sr.Left,
+                                sr.Top,
+                                sr.Right,
+                                sr.Bottom,
+                                interesting.join("\n  "),
+                            );
+                        }
+                    }
                 }
 
                 // Decode CHAR_INFO buffer into Cell grid
