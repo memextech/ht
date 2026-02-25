@@ -717,6 +717,17 @@ fn console_diag_enabled() -> bool {
 }
 
 /// Patches `CHAR_INFO` UnicodeChar fields by re-reading characters directly
+/// Returns `true` when the buffer contains cells whose `UnicodeChar` is
+/// zeroed but whose `Attributes` are non-zero — the signature of the
+/// CP 65001 console host bug that `patch_char_info_chars` is designed to fix.
+#[cfg(windows)]
+fn needs_char_patching(buf: &[CHAR_INFO]) -> bool {
+    buf.iter().any(|ci| {
+        let ch = unsafe { ci.Char.UnicodeChar };
+        ch == 0 && ci.Attributes != 0
+    })
+}
+
 /// via `ReadConsoleOutputCharacterW`. Works around a legacy console host bug
 /// where `ReadConsoleOutputW` returns zeroed `UnicodeChar` fields under
 /// CP 65001 (UTF-8 system locale) by walking the viewport row-by-row and
@@ -1796,16 +1807,18 @@ impl ScrapePty {
                         .is_ok()
                     };
                     if scroll_ok {
-                        patch_char_info_chars(
-                            conout_h,
-                            &mut scroll_buf,
-                            COORD {
-                                X: sr.Left,
-                                Y: scroll_start,
-                            },
-                            viewport_width,
-                            read_height,
-                        );
+                        if needs_char_patching(&scroll_buf) {
+                            patch_char_info_chars(
+                                conout_h,
+                                &mut scroll_buf,
+                                COORD {
+                                    X: sr.Left,
+                                    Y: scroll_start,
+                                },
+                                viewport_width,
+                                read_height,
+                            );
+                        }
                         for row_idx in 0..read_height {
                             let start = row_idx * viewport_width;
                             let end = start + viewport_width;
@@ -1861,16 +1874,18 @@ impl ScrapePty {
                     break;
                 }
 
-                patch_char_info_chars(
-                    conout_h,
-                    &mut buf,
-                    COORD {
-                        X: sr.Left,
-                        Y: sr.Top,
-                    },
-                    viewport_width,
-                    viewport_height,
-                );
+                if needs_char_patching(&buf) {
+                    patch_char_info_chars(
+                        conout_h,
+                        &mut buf,
+                        COORD {
+                            X: sr.Left,
+                            Y: sr.Top,
+                        },
+                        viewport_width,
+                        viewport_height,
+                    );
+                }
 
                 // Decode CHAR_INFO buffer into Cell grid
                 let mut curr_viewport: Vec<Vec<Cell>> = Vec::with_capacity(viewport_height);
