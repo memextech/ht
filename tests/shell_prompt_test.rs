@@ -122,6 +122,7 @@ mod windows_scrape {
 
         let mut child = tokio::process::Command::new(bin)
             .args(&args)
+            .env("HT_CONSOLE_DIAG", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -133,11 +134,16 @@ mod windows_scrape {
 
         let mut vt = avt::Vt::builder().size(120, 40).resizable(true).build();
         let mut found = false;
+        let mut raw_lines: Vec<String> = Vec::new();
+        let mut seq_chunks: Vec<String> = Vec::new();
+        let mut exit_reason = "deadline expired";
         let deadline = Duration::from_secs(deadline_secs);
         let _ = timeout(deadline, async {
             while let Ok(Some(line)) = stdout.next_line().await {
+                raw_lines.push(line.clone());
                 if let Ok(json) = serde_json::from_str::<Value>(&line) {
                     if let Some(seq) = json["data"]["seq"].as_str() {
+                        seq_chunks.push(seq.to_string());
                         vt.feed_str(seq);
                     }
                 }
@@ -145,6 +151,9 @@ mod windows_scrape {
                     found = true;
                     break;
                 }
+            }
+            if !found {
+                exit_reason = "stdout closed (ht exited)";
             }
         })
         .await;
@@ -175,12 +184,33 @@ mod windows_scrape {
                 }
                 None => String::new(),
             };
+
+            let seq_display: Vec<String> = seq_chunks
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let hex: String = s
+                        .bytes()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("  [{i}] {:?}\n       hex: {hex}", s)
+                })
+                .collect();
+
             panic!(
                 "Prompt '{prompt_marker}' not found within {deadline:?}\n\
+                 Exit reason: {exit_reason}\n\
                  Shell args: {shell_args:?}\n\
                  Screen contents:\n{}\n\
+                 Seq chunks ({}):\n{}\n\
+                 Raw JSON lines ({}):\n{}\n\
                  Stderr:\n{stderr_text}",
                 screen_text(&vt),
+                seq_chunks.len(),
+                seq_display.join("\n"),
+                raw_lines.len(),
+                raw_lines.join("\n"),
             );
         }
     }
