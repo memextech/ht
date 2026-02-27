@@ -62,8 +62,9 @@ use windows::Win32::System::Console::{
     ATTACH_PARENT_PROCESS, AttachConsole, CHAR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
     CTRL_C_EVENT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleMode,
-    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD, ReadConsoleOutputW,
-    SMALL_RECT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode,
+    GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT_RECORD,
+    ReadConsoleOutputCharacterW, ReadConsoleOutputW, SMALL_RECT, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
     SetConsoleScreenBufferSize, SetConsoleWindowInfo, WriteConsoleInputW,
 };
 #[cfg(windows)]
@@ -428,6 +429,151 @@ struct Cell {
     attr: u16,
 }
 
+/// Opens a fresh handle to the currently active console screen buffer.
+///
+/// `CONOUT$` always resolves to whichever buffer is active *at open time*,
+/// so re-opening it each poll iteration tracks `SetConsoleActiveScreenBuffer`
+/// switches (used by PowerShell 5.x among others).
+#[cfg(windows)]
+fn open_conout() -> Option<OwnedHandle> {
+    let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+    let h = unsafe {
+        CreateFileW(
+            PCWSTR(name.as_ptr()),
+            GENERIC_READ.0 | GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            Default::default(),
+            None,
+        )
+    }
+    .ok()?;
+
+    // Propagate VT processing to the (possibly new) active buffer so the
+    // child's ANSI sequences are interpreted rather than displayed literally.
+    unsafe {
+        let mut mode = CONSOLE_MODE(0);
+        if GetConsoleMode(h, &mut mode).is_ok() {
+            let _ = SetConsoleMode(
+                h,
+                mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT,
+            );
+        }
+    }
+
+    Some(unsafe { OwnedHandle::from_raw_handle(h.0 as *mut _) })
+}
+
+/// Tracks the desired console size so newly activated screen buffers can be resized.
+#[cfg(windows)]
+struct ConsoleSize {
+    cols: std::sync::atomic::AtomicU16,
+    rows: std::sync::atomic::AtomicU16,
+}
+
+#[cfg(windows)]
+impl ConsoleSize {
+    fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            cols: std::sync::atomic::AtomicU16::new(cols),
+            rows: std::sync::atomic::AtomicU16::new(rows),
+        }
+    }
+
+    fn get(&self) -> (u16, u16) {
+        (
+            self.cols.load(std::sync::atomic::Ordering::Relaxed),
+            self.rows.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    fn set(&self, cols: u16, rows: u16) {
+        self.cols.store(cols, std::sync::atomic::Ordering::Relaxed);
+        self.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(windows)]
+fn clamp_console_dim(value: u16) -> i16 {
+    (value.max(1).min(i16::MAX as u16)) as i16
+}
+
+#[cfg(windows)]
+fn apply_console_size(handle: HANDLE, cols: u16, rows: u16, top: i16) {
+    unsafe {
+        let buf_width = clamp_console_dim(cols);
+        let mut buf_height: i16 = i16::MAX;
+        let small = SMALL_RECT {
+            Left: 0,
+            Top: 0,
+            Right: 0,
+            Bottom: 0,
+        };
+        let _ = SetConsoleWindowInfo(handle, true, &small);
+
+        if SetConsoleScreenBufferSize(
+            handle,
+            COORD {
+                X: buf_width,
+                Y: buf_height,
+            },
+        )
+        .is_err()
+        {
+            buf_height = clamp_console_dim(rows);
+            let _ = SetConsoleScreenBufferSize(
+                handle,
+                COORD {
+                    X: buf_width,
+                    Y: buf_height,
+                },
+            );
+        }
+
+        let viewport_height = clamp_console_dim(rows);
+        let viewport = SMALL_RECT {
+            Left: 0,
+            Top: top,
+            Right: buf_width - 1,
+            Bottom: top + viewport_height - 1,
+        };
+        let _ = SetConsoleWindowInfo(handle, true, &viewport);
+    }
+}
+
+#[cfg(windows)]
+fn ensure_console_size(handle: HANDLE, size: &ConsoleSize) -> Option<CONSOLE_SCREEN_BUFFER_INFO> {
+    unsafe {
+        let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = zeroed();
+        if GetConsoleScreenBufferInfo(handle, &mut csbi).is_err() {
+            return None;
+        }
+
+        let (desired_cols, desired_rows) = size.get();
+        let desired_cols_i16 = clamp_console_dim(desired_cols);
+        let desired_rows_i16 = clamp_console_dim(desired_rows);
+        let current_cols = csbi.dwSize.X;
+        let current_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+
+        if current_cols != desired_cols_i16 || current_rows != desired_rows_i16 {
+            // Skip the futile retry when the buffer is already correctly
+            // sized but the viewport window is stuck (headless CI where
+            // SetConsoleWindowInfo cannot expand beyond 1x1).
+            let buffer_ok =
+                current_cols == desired_cols_i16 && csbi.dwSize.Y >= desired_rows_i16;
+            if !buffer_ok {
+                apply_console_size(handle, desired_cols, desired_rows, csbi.srWindow.Top);
+                if GetConsoleScreenBufferInfo(handle, &mut csbi).is_err() {
+                    return None;
+                }
+            }
+        }
+
+        Some(csbi)
+    }
+}
+
 /// Converts a Windows console attribute word to an ANSI SGR escape sequence.
 #[cfg(windows)]
 fn attr_to_sgr(attr: u16) -> String {
@@ -509,9 +655,17 @@ fn decode_char_info_row(row: &[CHAR_INFO]) -> Vec<Cell> {
         let attrs = ci.Attributes;
 
         if attrs & LVB_TRAILING_BYTE != 0 {
-            // Padding cell for a wide character, skip
-            i += 1;
-            continue;
+            let raw_char = unsafe { ci.Char.UnicodeChar };
+            // Only skip if this is true padding for a wide character:
+            // either the cell is empty (UnicodeChar == 0) or the previous
+            // cell had LVB_LEADING_BYTE (confirming a real wide-char pair).
+            let prev_was_leading = i > 0 && (row[i - 1].Attributes & LVB_LEADING_BYTE != 0);
+            if raw_char == 0 || prev_was_leading {
+                i += 1;
+                continue;
+            }
+            // Otherwise the flag is spurious (e.g. CP 65001 on legacy conhost),
+            // fall through and treat as a normal cell.
         }
 
         let raw_char = unsafe { ci.Char.UnicodeChar };
@@ -559,6 +713,153 @@ fn decode_char_info_row(row: &[CHAR_INFO]) -> Vec<Cell> {
         i += 1;
     }
     cells
+}
+
+/// Returns `true` when the `HT_CONSOLE_DIAG` environment variable is set.
+/// Result is cached after the first check.
+#[cfg(windows)]
+fn console_diag_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("HT_CONSOLE_DIAG").is_some())
+}
+
+/// Patches `CHAR_INFO` UnicodeChar fields by re-reading characters directly
+/// Returns `true` when the buffer contains cells whose `UnicodeChar` is
+/// zeroed but whose `Attributes` are non-zero — the signature of the
+/// CP 65001 console host bug that `patch_char_info_chars` is designed to fix.
+#[cfg(windows)]
+fn needs_char_patching(buf: &[CHAR_INFO]) -> bool {
+    buf.iter().any(|ci| {
+        let ch = unsafe { ci.Char.UnicodeChar };
+        ch == 0 && ci.Attributes != 0
+    })
+}
+
+/// via `ReadConsoleOutputCharacterW`. Works around a legacy console host bug
+/// where `ReadConsoleOutputW` returns zeroed `UnicodeChar` fields under
+/// CP 65001 (UTF-8 system locale) by walking the viewport row-by-row and
+/// filling each cell, even if the API returns partial reads.
+///
+/// When `HT_CONSOLE_DIAG=1` is set, logs the **first** suspicious result
+/// (API error or first 16 chars all zero) to stderr.
+#[cfg(windows)]
+fn patch_char_info_chars(
+    handle: HANDLE,
+    buf: &mut [CHAR_INFO],
+    origin: COORD,
+    width: usize,
+    height: usize,
+) {
+    let total = match width.checked_mul(height) {
+        Some(t) => t,
+        None => return,
+    };
+    if total == 0 || buf.len() < total {
+        return;
+    }
+    if width == 0 || height == 0 {
+        return;
+    }
+    let mut char_buf: Vec<u16> = vec![0u16; width];
+
+    for row in 0..height {
+        let row_start = row * width;
+        let row_offset_i16 = match i16::try_from(row) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let mut col = 0usize;
+
+        while col < width {
+            let remaining = width - col;
+            let chunk = &mut char_buf[..remaining];
+            let col_offset_i16 = match i16::try_from(col) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let coord = COORD {
+                X: origin.X.saturating_add(col_offset_i16),
+                Y: origin.Y.saturating_add(row_offset_i16),
+            };
+            let mut chars_read: u32 = 0;
+            let cp_guard = CpGuard::enter_if_utf8();
+            let result =
+                unsafe { ReadConsoleOutputCharacterW(handle, chunk, coord, &mut chars_read) };
+            drop(cp_guard);
+
+            if console_diag_enabled() {
+                let suspicious = result.is_err()
+                    || chars_read == 0
+                    || chunk[..(chars_read as usize).min(chunk.len()).min(16)]
+                        .iter()
+                        .all(|&c| c == 0);
+                if suspicious {
+                    static LOGGED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        let n = (chars_read as usize).min(chunk.len()).min(16);
+                        eprintln!(
+                            "[ht-diag] patch_chars: result={result:?} chars_read={chars_read} \
+                             total={total} origin=({},{}) sample={:?} cp={}",
+                            coord.X,
+                            coord.Y,
+                            &chunk[..n],
+                            unsafe { GetConsoleOutputCP() },
+                        );
+                    }
+                }
+            }
+
+            if result.is_err() {
+                return;
+            }
+
+            let read = (chars_read as usize).min(chunk.len());
+            if read == 0 {
+                break;
+            }
+
+            let dest_start = row_start + col;
+            let dest_end = dest_start + read;
+            let dest_slice = &mut buf[dest_start..dest_end];
+            for (cell, ch) in dest_slice.iter_mut().zip(chunk.iter().take(read)) {
+                cell.Char.UnicodeChar = *ch;
+            }
+
+            col += read;
+        }
+    }
+}
+
+/// RAII guard that temporarily switches the console output code page from
+/// 65001 (UTF-8) to 437 (OEM US) for the duration of a synchronous
+/// `ReadConsoleOutputW` call. The original CP is restored on drop.
+#[cfg(windows)]
+struct CpGuard {
+    original: u32,
+    changed: bool,
+}
+
+#[cfg(windows)]
+impl CpGuard {
+    fn enter_if_utf8() -> Self {
+        let original = unsafe { GetConsoleOutputCP() };
+        let changed = if original == 65001 {
+            unsafe { SetConsoleOutputCP(437) }.is_ok()
+        } else {
+            false
+        };
+        Self { original, changed }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CpGuard {
+    fn drop(&mut self) {
+        if self.changed {
+            let _ = unsafe { SetConsoleOutputCP(self.original) };
+        }
+    }
 }
 
 /// Diffs previous and current viewport buffers and emits ANSI escape sequences.
@@ -1162,6 +1463,8 @@ struct ScrapePty {
     conout: SendHandle,
     conin: SendHandle,
     needs_cleanup: bool,
+    size: std::sync::Arc<ConsoleSize>,
+    original_cp: u32,
 }
 
 #[cfg(windows)]
@@ -1180,6 +1483,9 @@ impl Drop for ScrapePty {
                 }
                 if let Some(ref h) = self.proc_handle {
                     let _ = TerminateProcess(HANDLE(h.as_raw_handle()), 1);
+                }
+                if self.original_cp != 0 {
+                    let _ = SetConsoleOutputCP(self.original_cp);
                 }
                 let _ = SetConsoleCtrlHandler(None, false);
                 let _ = FreeConsole();
@@ -1375,40 +1681,20 @@ impl ScrapePty {
         }
 
         // 9. Apply terminal size — viewport = requested size, buffer height = maximum
-        let buf_width = (winsize.ws_col.min(i16::MAX as u16).max(1)) as i16;
-        let buf_height: i16 = i16::MAX;
+        apply_console_size(conout, winsize.ws_col, winsize.ws_row, 0);
 
-        unsafe {
-            // Shrink window to 1×1 (always valid)
-            let small = SMALL_RECT {
-                Left: 0,
-                Top: 0,
-                Right: 0,
-                Bottom: 0,
-            };
-            let _ = SetConsoleWindowInfo(conout, true, &small);
-
-            // Set buffer size
-            let _ = SetConsoleScreenBufferSize(
-                conout,
-                COORD {
-                    X: buf_width,
-                    Y: buf_height,
-                },
-            );
-
-            // Set viewport
-            let viewport = SMALL_RECT {
-                Left: 0,
-                Top: 0,
-                Right: buf_width - 1,
-                Bottom: (winsize.ws_row.min(i16::MAX as u16).max(1)) as i16 - 1,
-            };
-            let _ = SetConsoleWindowInfo(conout, true, &viewport);
+        // 9.5. Prime console output CP away from 65001 so the conhost
+        // has time to settle before the first poll iteration (~40ms later).
+        // CpGuard still handles per-call switching during the poll loop.
+        let original_cp = unsafe { GetConsoleOutputCP() };
+        if original_cp == 65001 {
+            let _ = unsafe { SetConsoleOutputCP(437) };
         }
 
         // 10. Disarm guard — ownership transfers to ScrapePty
         guard.disarm();
+
+        let size = std::sync::Arc::new(ConsoleSize::new(winsize.ws_col, winsize.ws_row));
 
         Ok(ScrapePty {
             child_pid,
@@ -1417,6 +1703,8 @@ impl ScrapePty {
             conout: conout_handle,
             conin: conin_handle,
             needs_cleanup: true,
+            size,
+            original_cp,
         })
     }
 
@@ -1430,6 +1718,7 @@ impl ScrapePty {
         let conout = self.conout;
         let conin = self.conin;
         let child_pid = self.child_pid;
+        let console_size = self.size.clone();
 
         // Take ownership of process/thread handles out of self.
         // self.proc_handle becomes None, so Drop won't try to TerminateProcess.
@@ -1448,6 +1737,8 @@ impl ScrapePty {
 
         // Screen poll thread (spawn_blocking)
         let output_tx_poll = output_tx.clone();
+        let size_for_poll = console_size.clone();
+        let primed_cp = self.original_cp;
         let mut poll_handle = tokio::task::spawn_blocking(move || {
             let mut prev_viewport: Vec<Vec<Cell>> = Vec::new();
             let mut prev_sr_window_top: i16 = 0;
@@ -1456,17 +1747,36 @@ impl ScrapePty {
             while !stop_flag_poll.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(40));
 
-                let conout_h = conout.to_handle();
-
-                // Get current screen buffer info
-                let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
-                if unsafe { GetConsoleScreenBufferInfo(conout_h, &mut csbi) }.is_err() {
-                    break;
+                // Restore the original CP after the priming settle period so
+                // CpGuard resumes per-call switching for subsequent reads.
+                if first_poll && primed_cp == 65001 {
+                    let _ = unsafe { SetConsoleOutputCP(primed_cp) };
                 }
 
+                // Re-open CONOUT$ to track active screen buffer switches.
+                // Falls back to the original handle if the open fails.
+                let conout_owned = open_conout();
+                let conout_h = if let Some(ref h) = conout_owned {
+                    HANDLE(h.as_raw_handle() as *mut _)
+                } else {
+                    conout.to_handle()
+                };
+
+                // Get current screen buffer info
+                let csbi = match ensure_console_size(conout_h, &size_for_poll) {
+                    Some(info) => info,
+                    None => break,
+                };
+
                 let sr = csbi.srWindow;
-                let viewport_width = (sr.Right - sr.Left + 1) as usize;
-                let viewport_height = (sr.Bottom - sr.Top + 1) as usize;
+                let (desired_cols, desired_rows) = size_for_poll.get();
+                // Use desired size clamped to buffer — handles headless CI where
+                // srWindow is stuck at 1x1 but the buffer is correctly sized.
+                let viewport_width =
+                    (desired_cols as i16).min(csbi.dwSize.X).max(1) as usize;
+                let viewport_height = (desired_rows as i16)
+                    .min(csbi.dwSize.Y - sr.Top) // don't read past buffer end
+                    .max(1) as usize;
 
                 if viewport_width == 0 || viewport_height == 0 {
                     continue;
@@ -1492,21 +1802,36 @@ impl ScrapePty {
                     let mut scroll_rect = SMALL_RECT {
                         Left: sr.Left,
                         Top: scroll_start,
-                        Right: sr.Right,
+                        Right: sr.Left + viewport_width as i16 - 1,
                         Bottom: scroll_start + read_height as i16 - 1,
                     };
 
-                    if unsafe {
-                        ReadConsoleOutputW(
-                            conout_h,
-                            scroll_buf.as_mut_ptr(),
-                            scroll_size,
-                            scroll_coord,
-                            &mut scroll_rect,
-                        )
-                    }
-                    .is_ok()
-                    {
+                    let scroll_ok = {
+                        let _cp = CpGuard::enter_if_utf8();
+                        unsafe {
+                            ReadConsoleOutputW(
+                                conout_h,
+                                scroll_buf.as_mut_ptr(),
+                                scroll_size,
+                                scroll_coord,
+                                &mut scroll_rect,
+                            )
+                        }
+                        .is_ok()
+                    };
+                    if scroll_ok {
+                        if needs_char_patching(&scroll_buf) {
+                            patch_char_info_chars(
+                                conout_h,
+                                &mut scroll_buf,
+                                COORD {
+                                    X: sr.Left,
+                                    Y: scroll_start,
+                                },
+                                viewport_width,
+                                read_height,
+                            );
+                        }
                         for row_idx in 0..read_height {
                             let start = row_idx * viewport_width;
                             let end = start + viewport_width;
@@ -1541,22 +1866,77 @@ impl ScrapePty {
                 let mut read_region = SMALL_RECT {
                     Left: sr.Left,
                     Top: sr.Top,
-                    Right: sr.Right,
-                    Bottom: sr.Bottom,
+                    Right: sr.Left + viewport_width as i16 - 1,
+                    Bottom: sr.Top + viewport_height as i16 - 1,
                 };
 
-                if unsafe {
-                    ReadConsoleOutputW(
-                        conout_h,
-                        buf.as_mut_ptr(),
-                        buf_size,
-                        buf_coord,
-                        &mut read_region,
-                    )
-                }
-                .is_err()
-                {
+                let read_ok = {
+                    let _cp = CpGuard::enter_if_utf8();
+                    unsafe {
+                        ReadConsoleOutputW(
+                            conout_h,
+                            buf.as_mut_ptr(),
+                            buf_size,
+                            buf_coord,
+                            &mut read_region,
+                        )
+                    }
+                    .is_ok()
+                };
+                if !read_ok {
                     break;
+                }
+
+                let patching = needs_char_patching(&buf);
+                if patching {
+                    patch_char_info_chars(
+                        conout_h,
+                        &mut buf,
+                        COORD {
+                            X: sr.Left,
+                            Y: sr.Top,
+                        },
+                        viewport_width,
+                        viewport_height,
+                    );
+                }
+
+                // One-shot diagnostic: log the first poll where the first row
+                // has any non-zero attributes (i.e. the shell wrote something).
+                if console_diag_enabled() {
+                    let first_row = &buf[..viewport_width.min(buf.len())];
+                    let has_content = first_row.iter().any(|ci| ci.Attributes != 0);
+                    if has_content {
+                        static LOGGED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            let cp_now = unsafe { GetConsoleOutputCP() };
+                            let interesting: Vec<String> = first_row
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, ci)| ci.Attributes != 0)
+                                .take(20)
+                                .map(|(i, ci)| {
+                                    let ch = unsafe { ci.Char.UnicodeChar };
+                                    format!("[{i}] ch=0x{ch:04x} attr=0x{:04x}", ci.Attributes)
+                                })
+                                .collect();
+                            eprintln!(
+                                "[ht-diag] ReadConsoleOutputW: cp={cp_now} \
+                                 needs_patch={patching} cursor=({},{}) \
+                                 viewport=({},{},{},{}) eff={}x{} first_row_cells:\n  {}",
+                                csbi.dwCursorPosition.X,
+                                csbi.dwCursorPosition.Y,
+                                sr.Left,
+                                sr.Top,
+                                sr.Right,
+                                sr.Bottom,
+                                viewport_width,
+                                viewport_height,
+                                interesting.join("\n  "),
+                            );
+                        }
+                    }
                 }
 
                 // Decode CHAR_INFO buffer into Cell grid
@@ -1568,8 +1948,12 @@ impl ScrapePty {
                 }
 
                 // Convert cursor to 1-based ANSI coordinates
-                let cursor_row = (csbi.dwCursorPosition.Y - sr.Top + 1).max(1) as u16;
-                let cursor_col = (csbi.dwCursorPosition.X - sr.Left + 1).max(1) as u16;
+                let cursor_row =
+                    (csbi.dwCursorPosition.Y - sr.Top + 1).max(1).min(viewport_height as i16)
+                        as u16;
+                let cursor_col =
+                    (csbi.dwCursorPosition.X - sr.Left + 1).max(1).min(viewport_width as i16)
+                        as u16;
 
                 // Diff and emit
                 let diff = diff_and_emit(
@@ -1640,49 +2024,28 @@ impl ScrapePty {
 
         // Resize task
         let resize_conout = conout;
+        let size_for_resize = console_size.clone();
         let resize_task = tokio::spawn(async move {
             let mut resize_rx = resize_rx;
             while let Some((new_cols, new_rows)) = resize_rx.recv().await {
-                let conout_h = resize_conout.to_handle();
-                let new_buf_width = (new_cols.min(i16::MAX as u16).max(1)) as i16;
-                let buf_height: i16 = i16::MAX;
-
-                unsafe {
-                    // Shrink to 1×1
-                    let small = SMALL_RECT {
-                        Left: 0,
-                        Top: 0,
-                        Right: 0,
-                        Bottom: 0,
-                    };
-                    let _ = SetConsoleWindowInfo(conout_h, true, &small);
-
-                    // New buffer size
-                    let _ = SetConsoleScreenBufferSize(
-                        conout_h,
-                        COORD {
-                            X: new_buf_width,
-                            Y: buf_height,
-                        },
-                    );
-
-                    // Get current top for viewport positioning
-                    let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = zeroed();
-                    let top = if GetConsoleScreenBufferInfo(conout_h, &mut csbi).is_ok() {
+                // Re-open CONOUT$ to track active screen buffer switches.
+                // Falls back to the original handle if the open fails.
+                let conout_owned = open_conout();
+                let conout_h = if let Some(ref h) = conout_owned {
+                    HANDLE(h.as_raw_handle() as *mut _)
+                } else {
+                    resize_conout.to_handle()
+                };
+                let top = {
+                    let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
+                    if unsafe { GetConsoleScreenBufferInfo(conout_h, &mut csbi) }.is_ok() {
                         csbi.srWindow.Top
                     } else {
                         0
-                    };
-
-                    let new_rows_i16 = (new_rows.min(i16::MAX as u16).max(1)) as i16;
-                    let viewport = SMALL_RECT {
-                        Left: 0,
-                        Top: top,
-                        Right: new_buf_width - 1,
-                        Bottom: top + new_rows_i16 - 1,
-                    };
-                    let _ = SetConsoleWindowInfo(conout_h, true, &viewport);
-                }
+                    }
+                };
+                apply_console_size(conout_h, new_cols, new_rows, top);
+                size_for_resize.set(new_cols, new_rows);
             }
         });
 
@@ -1750,6 +2113,11 @@ impl ScrapePty {
 
         // 5. Re-enable Ctrl+C
         let _ = unsafe { SetConsoleCtrlHandler(None, false) };
+
+        // 5.5. Restore console output CP
+        if self.original_cp != 0 {
+            let _ = unsafe { SetConsoleOutputCP(self.original_cp) };
+        }
 
         // 6. Detach from child's console
         let _ = unsafe { FreeConsole() };
