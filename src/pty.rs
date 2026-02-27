@@ -557,9 +557,16 @@ fn ensure_console_size(handle: HANDLE, size: &ConsoleSize) -> Option<CONSOLE_SCR
         let current_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
 
         if current_cols != desired_cols_i16 || current_rows != desired_rows_i16 {
-            apply_console_size(handle, desired_cols, desired_rows, csbi.srWindow.Top);
-            if GetConsoleScreenBufferInfo(handle, &mut csbi).is_err() {
-                return None;
+            // Skip the futile retry when the buffer is already correctly
+            // sized but the viewport window is stuck (headless CI where
+            // SetConsoleWindowInfo cannot expand beyond 1x1).
+            let buffer_ok =
+                current_cols == desired_cols_i16 && csbi.dwSize.Y >= desired_rows_i16;
+            if !buffer_ok {
+                apply_console_size(handle, desired_cols, desired_rows, csbi.srWindow.Top);
+                if GetConsoleScreenBufferInfo(handle, &mut csbi).is_err() {
+                    return None;
+                }
             }
         }
 
@@ -1762,8 +1769,14 @@ impl ScrapePty {
                 };
 
                 let sr = csbi.srWindow;
-                let viewport_width = (sr.Right - sr.Left + 1) as usize;
-                let viewport_height = (sr.Bottom - sr.Top + 1) as usize;
+                let (desired_cols, desired_rows) = size_for_poll.get();
+                // Use desired size clamped to buffer — handles headless CI where
+                // srWindow is stuck at 1x1 but the buffer is correctly sized.
+                let viewport_width =
+                    (desired_cols as i16).min(csbi.dwSize.X).max(1) as usize;
+                let viewport_height = (desired_rows as i16)
+                    .min(csbi.dwSize.Y - sr.Top) // don't read past buffer end
+                    .max(1) as usize;
 
                 if viewport_width == 0 || viewport_height == 0 {
                     continue;
@@ -1789,7 +1802,7 @@ impl ScrapePty {
                     let mut scroll_rect = SMALL_RECT {
                         Left: sr.Left,
                         Top: scroll_start,
-                        Right: sr.Right,
+                        Right: sr.Left + viewport_width as i16 - 1,
                         Bottom: scroll_start + read_height as i16 - 1,
                     };
 
@@ -1853,8 +1866,8 @@ impl ScrapePty {
                 let mut read_region = SMALL_RECT {
                     Left: sr.Left,
                     Top: sr.Top,
-                    Right: sr.Right,
-                    Bottom: sr.Bottom,
+                    Right: sr.Left + viewport_width as i16 - 1,
+                    Bottom: sr.Top + viewport_height as i16 - 1,
                 };
 
                 let read_ok = {
@@ -1911,13 +1924,15 @@ impl ScrapePty {
                             eprintln!(
                                 "[ht-diag] ReadConsoleOutputW: cp={cp_now} \
                                  needs_patch={patching} cursor=({},{}) \
-                                 viewport=({},{},{},{}) first_row_cells:\n  {}",
+                                 viewport=({},{},{},{}) eff={}x{} first_row_cells:\n  {}",
                                 csbi.dwCursorPosition.X,
                                 csbi.dwCursorPosition.Y,
                                 sr.Left,
                                 sr.Top,
                                 sr.Right,
                                 sr.Bottom,
+                                viewport_width,
+                                viewport_height,
                                 interesting.join("\n  "),
                             );
                         }
@@ -1933,8 +1948,12 @@ impl ScrapePty {
                 }
 
                 // Convert cursor to 1-based ANSI coordinates
-                let cursor_row = (csbi.dwCursorPosition.Y - sr.Top + 1).max(1) as u16;
-                let cursor_col = (csbi.dwCursorPosition.X - sr.Left + 1).max(1) as u16;
+                let cursor_row =
+                    (csbi.dwCursorPosition.Y - sr.Top + 1).max(1).min(viewport_height as i16)
+                        as u16;
+                let cursor_col =
+                    (csbi.dwCursorPosition.X - sr.Left + 1).max(1).min(viewport_width as i16)
+                        as u16;
 
                 // Diff and emit
                 let diff = diff_and_emit(
